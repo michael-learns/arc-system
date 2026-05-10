@@ -1,15 +1,13 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import github from '$lib/images/github.svg';
-	import logo from '$lib/images/svelte-logo.svg';
+
+	let { data } = $props();
 </script>
 
 <header>
-	<div class="corner">
-		<a href="https://svelte.dev/docs/kit">
-			<img src={logo} alt="SvelteKit" />
-		</a>
+	<div class="brand">
+		<a href={resolve('/')}>arq-system</a>
 	</div>
 
 	<nav>
@@ -23,8 +21,8 @@
 			<li aria-current={page.url.pathname === '/about' ? 'page' : undefined}>
 				<a href={resolve('/about')}>About</a>
 			</li>
-			<li aria-current={page.url.pathname.startsWith('/sverdle') ? 'page' : undefined}>
-				<a href={resolve('/sverdle')}>Sverdle</a>
+			<li aria-current={page.url.pathname === '/dashboard' ? 'page' : undefined}>
+				<a href={resolve('/dashboard')}>Dashboard</a>
 			</li>
 		</ul>
 		<svg viewBox="0 0 2 3" aria-hidden="true">
@@ -32,10 +30,14 @@
 		</svg>
 	</nav>
 
-	<div class="corner">
-		<a href="https://github.com/sveltejs/kit">
-			<img src={github} alt="GitHub" />
-		</a>
+	<div class="actions">
+		{#if data.user}
+			<form method="POST" action="/logout">
+				<button type="submit" class="action-button action-button-secondary">Sign out</button>
+			</form>
+		{:else}
+			<a class="action-button" href="/login">Sign in</a>
+		{/if}
 	</div>
 </header>
 
@@ -43,25 +45,22 @@
 	header {
 		display: flex;
 		justify-content: space-between;
-	}
-
-	.corner {
-		width: 3em;
-		height: 3em;
-	}
-
-	.corner a {
-		display: flex;
 		align-items: center;
-		justify-content: center;
-		width: 100%;
-		height: 100%;
+		gap: 1rem;
+		padding: 1rem 1rem 0;
 	}
 
-	.corner img {
-		width: 2em;
-		height: 2em;
-		object-fit: contain;
+	.brand,
+	.actions {
+		min-width: 8rem;
+	}
+
+	.brand a {
+		color: var(--color-text);
+		font-size: 1.05rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
 
 	nav {
@@ -126,5 +125,51 @@
 
 	a:hover {
 		color: var(--color-theme-1);
+	}
+
+	.actions {
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	form {
+		margin: 0;
+	}
+
+	.action-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.7rem 1rem;
+		border: none;
+		border-radius: 999px;
+		background: var(--color-theme-1);
+		color: white;
+		font-size: 0.85rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		cursor: pointer;
+	}
+
+	.action-button:hover {
+		color: white;
+		text-decoration: none;
+		filter: brightness(0.96);
+	}
+
+	.action-button-secondary {
+		background: rgba(18, 42, 66, 0.9);
+	}
+
+	@media (max-width: 700px) {
+		header {
+			flex-direction: column;
+		}
+
+		.brand,
+		.actions {
+			min-width: 0;
+		}
 	}
 </style>

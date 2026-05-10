@@ -1,42 +1,45 @@
-# sv
+# arq-system
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit app with WorkOS AuthKit wired in as the authentication provider.
 
-## Creating a project
+## Local setup
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+1. Copy `.env.example` to `.env`.
+2. Fill in your WorkOS values:
 
 ```sh
-# recreate this project
-bun x sv@0.15.3 create --template demo --types ts --add tailwindcss="plugins:forms,typography" --install bun arq-system
+WORKOS_API_KEY=sk_test_...
+WORKOS_CLIENT_ID=client_...
+WORKOS_COOKIE_PASSWORD=a-long-random-string-with-at-least-32-characters
 ```
 
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+3. Install dependencies and start the app:
 
 ```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+bun install
+bun run dev
 ```
 
-## Building
+## WorkOS dashboard setup
 
-To create a production version of your app:
+Add these URLs in the WorkOS dashboard for your environment:
+
+- Redirect URI: `http://localhost:5173/auth/callback`
+- Sign-out redirect: `http://localhost:5173/`
+- Sign-in endpoint: `http://localhost:5173/login`
+
+For production, add your real domain versions of those same routes too.
+
+## Included auth routes
+
+- `GET /login`: starts the WorkOS hosted auth flow
+- `GET /auth/callback`: exchanges the auth code for a sealed session
+- `POST /logout`: clears the session and sends the user through WorkOS logout
+- `GET /dashboard`: protected example page
+
+## Development
 
 ```sh
-npm run build
+bun run check
+bun run build
 ```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
