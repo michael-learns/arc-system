@@ -13,11 +13,30 @@ declare global {
 				role: string | null;
 			} | null;
 			workosConfigured: boolean;
+			convexContext: {
+				user: {
+					_id: string;
+					name: string;
+					email: string;
+					tokenIdentifier: string;
+				} | null;
+				organization: {
+					_id: string;
+					name: string;
+					workosOrgId: string;
+					enrollmentPolicy: 'org_controlled' | 'facilitator_open';
+				} | null;
+				membership: {
+					_id: string;
+					roles: ('admin' | 'facilitator' | 'student')[];
+				} | null;
+			} | null;
 		}
 		interface PageData {
 			user: User | null;
 			session: App.Locals['session'];
 			workosConfigured: boolean;
+			convexContext: App.Locals['convexContext'];
 		}
 		// interface PageState {}
 		// interface Platform {}
