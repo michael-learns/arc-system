@@ -7,6 +7,7 @@ export const load = ({ locals }) => {
 
 	return {
 		user: locals.user,
-		session: locals.session
+		session: locals.session,
+		convexContext: locals.convexContext
 	};
 };

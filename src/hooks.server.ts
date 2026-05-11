@@ -6,11 +6,25 @@ import {
 	getWorkOSConfig,
 	isWorkOSConfigured
 } from '$lib/server/workos';
+import { bootstrapConvexSession } from '$lib/server/convex';
+
+async function safeBootstrap(user: NonNullable<App.Locals['user']>, organizationId: string | null) {
+	try {
+		return await bootstrapConvexSession({
+			user,
+			organizationId
+		});
+	} catch (error) {
+		console.error('Convex session bootstrap failed', error);
+		return null;
+	}
+}
 
 export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = null;
 	event.locals.session = null;
 	event.locals.workosConfigured = isWorkOSConfigured();
+	event.locals.convexContext = null;
 
 	const sealedSession = event.cookies.get(WORKOS_SESSION_COOKIE);
 
@@ -35,6 +49,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 				organizationId: auth.organizationId ?? null,
 				role: auth.role ?? null
 			};
+			event.locals.convexContext = await safeBootstrap(
+				auth.user,
+				auth.organizationId ?? null
+			);
 
 			return resolve(event);
 		}
@@ -62,6 +80,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 			organizationId: refreshed.organizationId ?? null,
 			role: refreshed.role ?? null
 		};
+		event.locals.convexContext = await safeBootstrap(
+			refreshed.user,
+			refreshed.organizationId ?? null
+		);
 
 		return resolve(event);
 	} catch {

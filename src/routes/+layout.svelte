@@ -1,8 +1,12 @@
 <script lang="ts">
 	import Header from './Header.svelte';
 	import './layout.css';
+	import { PUBLIC_CONVEX_URL } from '$env/static/public';
+	import { setupConvex } from 'convex-svelte';
 
 	let { children, data } = $props();
+
+	setupConvex(PUBLIC_CONVEX_URL);
 </script>
 
 <div class="app">

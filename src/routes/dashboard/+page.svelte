@@ -29,6 +29,16 @@
 			<h2>Organization</h2>
 			<p>{data.session?.organizationId ?? 'No organization selected'}</p>
 		</article>
+
+		<article class="card">
+			<h2>Convex User</h2>
+			<p>{data.convexContext?.user?.name ?? 'Not bootstrapped yet'}</p>
+		</article>
+
+		<article class="card">
+			<h2>Membership Roles</h2>
+			<p>{data.convexContext?.membership?.roles.join(', ') || 'No domain roles assigned yet'}</p>
+		</article>
 	</div>
 </section>
 
