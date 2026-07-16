@@ -12,16 +12,18 @@
 	// The landing page (/) is a full-bleed marketing page with its own nav and
 	// footer, so it opts out of the shared app chrome and width constraint.
 	const isLanding = $derived(page.url.pathname === '/');
+	const isDashboardWorkspace = $derived(page.url.pathname.startsWith('/dashboard'));
+	const useCustomShell = $derived(isLanding || isDashboardWorkspace);
 </script>
 
-<div class="app" class:landing={isLanding}>
-	{#if !isLanding}
+<div class="app" class:landing={isLanding} class:workspace={isDashboardWorkspace}>
+	{#if !useCustomShell}
 		<Header {data} />
 	{/if}
 
-	<main class:full-bleed={isLanding}>{@render children()}</main>
+	<main class:full-bleed={useCustomShell}>{@render children()}</main>
 
-	{#if !isLanding}
+	{#if !useCustomShell}
 		<footer>
 			<p>arq-system is using WorkOS AuthKit for authentication.</p>
 		</footer>

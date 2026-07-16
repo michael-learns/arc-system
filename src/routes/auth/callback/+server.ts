@@ -1,8 +1,9 @@
-import { redirect } from '@sveltejs/kit';
+import { isRedirect, redirect } from '@sveltejs/kit';
 import {
 	WORKOS_SESSION_COOKIE,
 	WORKOS_STATE_COOKIE,
 	createWorkOS,
+	getAuthErrorRedirect,
 	getCookieOptions,
 	getWorkOSConfig,
 	isWorkOSConfigured
@@ -10,9 +11,7 @@ import {
 
 export const GET = async ({ cookies, url }) => {
 	if (!isWorkOSConfigured()) {
-		throw new Error(
-			'WorkOS is not configured yet. Add WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_COOKIE_PASSWORD first.'
-		);
+		throw redirect(302, getAuthErrorRedirect(url, 'login_unavailable'));
 	}
 
 	const code = url.searchParams.get('code');
@@ -22,29 +21,38 @@ export const GET = async ({ cookies, url }) => {
 	cookies.delete(WORKOS_STATE_COOKIE, { path: '/' });
 
 	if (!code) {
-		throw new Error('WorkOS callback did not include an authorization code.');
+		throw redirect(302, getAuthErrorRedirect(url, 'login_failed'));
 	}
 
 	if (!state || !expectedState || state !== expectedState) {
-		throw new Error('WorkOS callback state validation failed.');
+		throw redirect(302, getAuthErrorRedirect(url, 'login_failed'));
 	}
 
-	const workos = createWorkOS();
-	const { clientId, cookiePassword } = getWorkOSConfig();
-	const auth = await workos.userManagement.authenticateWithCode({
-		clientId,
-		code,
-		session: {
-			sealSession: true,
-			cookiePassword
+	try {
+		const workos = createWorkOS();
+		const { clientId, cookiePassword } = getWorkOSConfig();
+		const auth = await workos.userManagement.authenticateWithCode({
+			clientId,
+			code,
+			session: {
+				sealSession: true,
+				cookiePassword
+			}
+		});
+
+		if (!auth.sealedSession) {
+			throw redirect(302, getAuthErrorRedirect(url, 'login_failed'));
 		}
-	});
 
-	if (!auth.sealedSession) {
-		throw new Error('WorkOS did not return a sealed session.');
+		cookies.set(WORKOS_SESSION_COOKIE, auth.sealedSession, getCookieOptions());
+
+		throw redirect(302, '/dashboard');
+	} catch (error) {
+		if (isRedirect(error)) {
+			throw error;
+		}
+
+		console.error('WorkOS callback failed', error);
+		throw redirect(302, getAuthErrorRedirect(url, 'login_failed'));
 	}
-
-	cookies.set(WORKOS_SESSION_COOKIE, auth.sealedSession, getCookieOptions());
-
-	throw redirect(302, '/dashboard');
 };

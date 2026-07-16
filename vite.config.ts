@@ -9,5 +9,8 @@ export default defineConfig({
 		// just localhost. allowedHosts lets Vite accept requests on *.ts.net hosts.
 		host: true,
 		allowedHosts: ['.ts.net']
+	},
+	ssr: {
+		noExternal: ['svelte-sonner', 'mode-watcher']
 	}
 });

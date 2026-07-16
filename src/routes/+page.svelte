@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { page } from '$app/state';
+
 	let { data } = $props();
 
 	let scrollY = $state(0);
@@ -9,6 +11,17 @@
 	const signedIn = $derived(Boolean(data.user));
 	const primaryHref = $derived(signedIn ? '/dashboard' : '/login');
 	const primaryLabel = $derived(signedIn ? 'Open dashboard' : 'Start teaching free');
+	const authError = $derived(page.url.searchParams.get('authError'));
+	const authErrorMessage = $derived.by(() => {
+		switch (authError) {
+			case 'login_unavailable':
+				return 'Login is temporarily unavailable on this environment. Add the WorkOS settings to enable sign-in.';
+			case 'login_failed':
+				return 'We could not finish signing you in. Please try again.';
+			default:
+				return null;
+		}
+	});
 </script>
 
 <svelte:head>
@@ -28,6 +41,12 @@
 <svelte:window bind:scrollY />
 
 <div class="na-landing">
+	{#if authErrorMessage}
+		<div class="auth-alert" role="alert">
+			{authErrorMessage}
+		</div>
+	{/if}
+
 	<nav class="nav" class:scrolled={scrollY > 8}>
 		<div class="brand">
 			<div class="brand-mark">N</div>
@@ -308,12 +327,21 @@
 	}
 	.btn-primary {
 		background: var(--ink);
-		color: var(--bg);
+		color: var(--bg-elevated);
 		border-color: var(--ink);
 	}
 	.btn-primary:hover {
 		background: var(--ink-2);
 		border-color: var(--ink-2);
+		color: var(--bg-elevated);
+	}
+	.na-landing a.btn-primary,
+	.na-landing a.btn-primary:hover,
+	.na-landing a.btn-primary:visited,
+	.nav-link.btn-primary,
+	.nav-link.btn-primary:hover,
+	.nav-link.btn-primary:visited {
+		color: var(--bg-elevated);
 	}
 	.btn-lg {
 		padding: 11px 18px;
@@ -334,6 +362,19 @@
 		-webkit-backdrop-filter: blur(14px);
 		border-bottom: 1px solid transparent;
 		transition: border-color 0.2s ease;
+	}
+	.auth-alert {
+		width: min(960px, calc(100% - 32px));
+		margin: 24px auto 0;
+		padding: 14px 18px;
+		border: 1px solid rgba(215, 38, 61, 0.24);
+		border-radius: 16px;
+		background: rgba(255, 244, 230, 0.92);
+		color: #7a1f2c;
+		font-size: 0.95rem;
+		font-weight: 600;
+		line-height: 1.5;
+		box-shadow: 0 12px 32px rgba(100, 40, 24, 0.08);
 	}
 	.nav.scrolled {
 		border-bottom-color: var(--line);

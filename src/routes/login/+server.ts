@@ -1,7 +1,8 @@
-import { redirect } from '@sveltejs/kit';
+import { isRedirect, redirect } from '@sveltejs/kit';
 import {
 	WORKOS_STATE_COOKIE,
 	createWorkOS,
+	getAuthErrorRedirect,
 	getCallbackUrl,
 	getCookieOptions,
 	isWorkOSConfigured
@@ -9,23 +10,30 @@ import {
 
 export const GET = async ({ cookies, url }) => {
 	if (!isWorkOSConfigured()) {
-		throw new Error(
-			'WorkOS is not configured yet. Add WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_COOKIE_PASSWORD first.'
-		);
+		throw redirect(302, getAuthErrorRedirect(url, 'login_unavailable'));
 	}
 
-	const workos = createWorkOS();
-	const state = crypto.randomUUID();
-	const authUrl = workos.userManagement.getAuthorizationUrl({
-		provider: 'authkit',
-		redirectUri: getCallbackUrl(url),
-		state
-	});
+	try {
+		const workos = createWorkOS();
+		const state = crypto.randomUUID();
+		const authUrl = workos.userManagement.getAuthorizationUrl({
+			provider: 'authkit',
+			redirectUri: getCallbackUrl(url),
+			state
+		});
 
-	cookies.set(WORKOS_STATE_COOKIE, state, {
-		...getCookieOptions(),
-		maxAge: 60 * 10
-	});
+		cookies.set(WORKOS_STATE_COOKIE, state, {
+			...getCookieOptions(),
+			maxAge: 60 * 10
+		});
 
-	throw redirect(302, authUrl);
+		throw redirect(302, authUrl);
+	} catch (error) {
+		if (isRedirect(error)) {
+			throw error;
+		}
+
+		console.error('WorkOS login redirect failed', error);
+		throw redirect(302, getAuthErrorRedirect(url, 'login_unavailable'));
+	}
 };

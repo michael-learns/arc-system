@@ -5,8 +5,8 @@ import {
   assert,
   clampLimit,
   requireDoc,
-  requireFacilitatorManager,
-  requireOrgActor,
+  requireFacilitatorManagerById,
+  requireOrgActorById,
   requireUserByTokenIdentifier,
   scoreQuizQuestion,
 } from "./lib/helpers";
@@ -24,8 +24,7 @@ async function requireEnrollmentAccess(
     return { actor, enrollment, classroom, role: "student" as const };
   }
 
-  const organization = await requireDoc(ctx, classroom.orgId, "Organization not found.");
-  const orgActor = await requireOrgActor(ctx, tokenIdentifier, organization.workosOrgId);
+  const orgActor = await requireOrgActorById(ctx, tokenIdentifier, classroom.orgId);
   assert(
     orgActor.user.isSuperAdmin ||
       orgActor.membership.roles.includes("admin") ||
@@ -153,15 +152,15 @@ export const upsertNote = mutation({
 export const createStudentLog = mutation({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     studentId: v.id("users"),
     body: v.string(),
   },
   handler: async (ctx, args) => {
-    const actor = await requireFacilitatorManager(
+    const actor = await requireFacilitatorManagerById(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
     );
 
     const logId = await ctx.db.insert("studentLogs", {
@@ -178,15 +177,15 @@ export const createStudentLog = mutation({
 export const listStudentLogs = query({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     studentId: v.id("users"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const actor = await requireFacilitatorManager(
+    const actor = await requireFacilitatorManagerById(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
     );
 
     return await ctx.db
@@ -263,8 +262,13 @@ export const getStudentAssignedCourseView = query({
               }),
             );
 
+            const imageUrl = slide.imageStorageId
+              ? await ctx.storage.getUrl(slide.imageStorageId)
+              : null;
+
             return {
               ...slide,
+              imageUrl,
               note,
               progress,
               quizStates,

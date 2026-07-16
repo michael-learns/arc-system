@@ -40,16 +40,6 @@ export async function getUserByTokenIdentifier(
     .unique();
 }
 
-export async function getOrganizationByWorkosOrgId(
-  ctx: Ctx,
-  workosOrgId: string,
-) {
-  return await ctx.db
-    .query("organizations")
-    .withIndex("by_workosOrgId", (q) => q.eq("workosOrgId", workosOrgId))
-    .unique();
-}
-
 export async function getMembership(
   ctx: Ctx,
   userId: Id<"users">,
@@ -72,12 +62,12 @@ export async function requireUserByTokenIdentifier(
   return user;
 }
 
-export async function requireOrganizationByWorkosOrgId(
+export async function requireOrganizationById(
   ctx: Ctx,
-  workosOrgId: string,
+  organizationId: Id<"organizations">,
 ) {
-  const organization = await getOrganizationByWorkosOrgId(ctx, workosOrgId);
-  assert(organization, "Organization has not been bootstrapped in Convex.");
+  const organization = await ctx.db.get(organizationId);
+  assert(organization, "Organization was not found.");
   return organization;
 }
 
@@ -91,13 +81,13 @@ export async function requireMembership(
   return membership;
 }
 
-export async function requireOrgActor(
+export async function requireOrgActorById(
   ctx: Ctx,
   tokenIdentifier: string,
-  workosOrgId: string,
+  organizationId: Id<"organizations">,
 ) {
   const user = await requireUserByTokenIdentifier(ctx, tokenIdentifier);
-  const organization = await requireOrganizationByWorkosOrgId(ctx, workosOrgId);
+  const organization = await requireOrganizationById(ctx, organizationId);
   const membership = await requireMembership(ctx, user._id, organization._id);
 
   return { user, organization, membership };
@@ -115,12 +105,12 @@ export function requireAnyRole(
   assert(roles.some((role) => membership.roles.includes(role)), message);
 }
 
-export async function requireSuperAdminOrOrgAdmin(
+export async function requireSuperAdminOrOrgAdminById(
   ctx: Ctx,
   tokenIdentifier: string,
-  workosOrgId: string,
+  organizationId: Id<"organizations">,
 ) {
-  const actor = await requireOrgActor(ctx, tokenIdentifier, workosOrgId);
+  const actor = await requireOrgActorById(ctx, tokenIdentifier, organizationId);
   if (actor.user.isSuperAdmin) {
     return actor;
   }
@@ -129,12 +119,12 @@ export async function requireSuperAdminOrOrgAdmin(
   return actor;
 }
 
-export async function requireFacilitatorManager(
+export async function requireFacilitatorManagerById(
   ctx: Ctx,
   tokenIdentifier: string,
-  workosOrgId: string,
+  organizationId: Id<"organizations">,
 ) {
-  const actor = await requireOrgActor(ctx, tokenIdentifier, workosOrgId);
+  const actor = await requireOrgActorById(ctx, tokenIdentifier, organizationId);
   if (actor.user.isSuperAdmin) {
     return actor;
   }
@@ -223,7 +213,19 @@ export async function duplicateCourseTree(
         type: sourceSlide.type,
         order: sourceSlide.order,
         updatedAt: Date.now(),
+        ...(sourceSlide.title ? { title: sourceSlide.title } : {}),
+        ...(sourceSlide.subtitle ? { subtitle: sourceSlide.subtitle } : {}),
         ...(sourceSlide.body ? { body: sourceSlide.body } : {}),
+        ...(sourceSlide.imageDescription
+          ? { imageDescription: sourceSlide.imageDescription }
+          : {}),
+        ...(sourceSlide.imageStorageId ? { imageStorageId: sourceSlide.imageStorageId } : {}),
+        ...(sourceSlide.imageName ? { imageName: sourceSlide.imageName } : {}),
+        ...(sourceSlide.imageContentType
+          ? { imageContentType: sourceSlide.imageContentType }
+          : {}),
+        ...(sourceSlide.imageSize !== undefined ? { imageSize: sourceSlide.imageSize } : {}),
+        ...(sourceSlide.presenterNotes ? { presenterNotes: sourceSlide.presenterNotes } : {}),
         ...(forkMode ? { forkOf: sourceSlide._id } : {}),
       });
 

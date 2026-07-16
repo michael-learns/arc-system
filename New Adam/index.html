@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New Adam — Live Classroom</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="styles.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 32px; }
+  .wrap { width: 100%; max-width: 920px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 48px; }
+  .brand-mark {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    background: var(--ink);
+    color: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-serif);
+    font-weight: 600;
+    font-size: 16px;
+  }
+  .brand-name {
+    font-family: var(--font-serif);
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  h1.headline {
+    font-family: var(--font-serif);
+    font-size: clamp(36px, 5vw, 56px);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    margin: 0 0 18px;
+    text-wrap: balance;
+    max-width: 22ch;
+  }
+  .lede {
+    font-size: 17px;
+    color: var(--ink-2);
+    max-width: 56ch;
+    margin: 0 0 56px;
+    text-wrap: pretty;
+  }
+  .role-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .role-card {
+    padding: 32px 28px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--line);
+    background: var(--bg-elevated);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: left;
+    text-decoration: none;
+    color: inherit;
+    display: flex; flex-direction: column;
+    gap: 14px;
+    min-height: 220px;
+  }
+  .role-card:hover {
+    border-color: var(--ink);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+  .role-glyph {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: var(--bg-subtle);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+  }
+  .role-title {
+    font-family: var(--font-serif);
+    font-size: 24px;
+    font-weight: 500;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .role-desc {
+    color: var(--ink-3);
+    font-size: 14px;
+    margin: 0;
+    line-height: 1.55;
+    flex: 1;
+  }
+  .role-cta {
+    font-size: 13px;
+    color: var(--accent-ink);
+    font-weight: 500;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .footnote {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--ink-3);
+    display: flex; justify-content: space-between;
+  }
+  .footnote .mono { font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="brand-mark">N</div>
+    <div class="brand-name">New Adam</div>
+  </div>
+
+  <h1 class="headline">A quiet space for live lectures.</h1>
+  <p class="lede">Teachers present from one screen. Students follow along from another. Slides stay in sync. Notes stay private.</p>
+
+  <div class="role-grid">
+    <a href="teacher.html" class="role-card">
+      <div class="role-glyph">T</div>
+      <h2 class="role-title">I'm teaching</h2>
+      <p class="role-desc">Open your courses, start a live session, and present with notes only you can see.</p>
+      <span class="role-cta">Continue as teacher →</span>
+    </a>
+    <a href="student.html" class="role-card">
+      <div class="role-glyph">S</div>
+      <h2 class="role-title">I'm attending</h2>
+      <p class="role-desc">Join your class with a code and follow the slides as your instructor presents them.</p>
+      <span class="role-cta">Continue as student →</span>
+    </a>
+  </div>
+
+  <div class="footnote">
+    <span>Tip: open both in separate tabs to see live sync between teacher and student views.</span>
+    <span class="mono">v0.4 · spring 2026</span>
+  </div>
+</div>
+</body>
+</html>

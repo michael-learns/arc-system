@@ -11,6 +11,7 @@
 import type * as auth from "../auth.js";
 import type * as classrooms from "../classrooms.js";
 import type * as courses from "../courses.js";
+import type * as dashboard from "../dashboard.js";
 import type * as learning from "../learning.js";
 import type * as lib_helpers from "../lib/helpers.js";
 import type * as lib_validators from "../lib/validators.js";
@@ -25,6 +26,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   classrooms: typeof classrooms;
   courses: typeof courses;
+  dashboard: typeof dashboard;
   learning: typeof learning;
   "lib/helpers": typeof lib_helpers;
   "lib/validators": typeof lib_validators;
