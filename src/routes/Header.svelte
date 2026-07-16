@@ -120,7 +120,7 @@
 		text-transform: uppercase;
 		letter-spacing: 0.1em;
 		text-decoration: none;
-		transition: color 0.2s linear;
+		transition: color var(--motion-ui) var(--motion-ease);
 	}
 
 	a:hover {
