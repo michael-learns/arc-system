@@ -7,18 +7,21 @@ import {
   getMembership,
   hasRole,
   requireDoc,
-  requireFacilitatorManager,
-  requireOrgActor,
+  requireFacilitatorManagerById,
   requireUserByTokenIdentifier,
 } from "./lib/helpers";
 
 async function requireClassroomManager(
   ctx: any,
   actorTokenIdentifier: string,
-  workosOrgId: string,
+  organizationId: Id<"organizations">,
   classroomId: Id<"classrooms">,
 ) {
-  const actor = await requireFacilitatorManager(ctx, actorTokenIdentifier, workosOrgId);
+  const actor = await requireFacilitatorManagerById(
+    ctx,
+    actorTokenIdentifier,
+    organizationId,
+  );
   const classroom = await requireDoc(ctx, classroomId, "Classroom not found.");
   assert(
     classroom.orgId === actor.organization._id,
@@ -37,15 +40,15 @@ async function requireClassroomManager(
 export const createClassroom = mutation({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     name: v.string(),
     courseId: v.id("courses"),
   },
   handler: async (ctx, args) => {
-    const actor = await requireFacilitatorManager(
+    const actor = await requireFacilitatorManagerById(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
     );
     const course = await requireDoc(ctx, args.courseId, "Course not found.");
 
@@ -68,7 +71,7 @@ export const createClassroom = mutation({
 export const updateClassroom = mutation({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     classroomId: v.id("classrooms"),
     name: v.optional(v.string()),
     archived: v.optional(v.boolean()),
@@ -77,7 +80,7 @@ export const updateClassroom = mutation({
     const { classroom } = await requireClassroomManager(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
       args.classroomId,
     );
 
@@ -109,14 +112,14 @@ export const updateClassroom = mutation({
 export const listFacilitatorClassrooms = query({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const actor = await requireFacilitatorManager(
+    const actor = await requireFacilitatorManagerById(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
     );
 
     const classrooms = await ctx.db
@@ -138,7 +141,7 @@ export const listFacilitatorClassrooms = query({
 export const enrollStudent = mutation({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     classroomId: v.id("classrooms"),
     studentTokenIdentifier: v.string(),
   },
@@ -146,7 +149,7 @@ export const enrollStudent = mutation({
     const { actor, classroom } = await requireClassroomManager(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
       args.classroomId,
     );
     const student = await requireUserByTokenIdentifier(ctx, args.studentTokenIdentifier);
@@ -205,7 +208,7 @@ export const enrollStudent = mutation({
 export const listClassroomRoster = query({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     classroomId: v.id("classrooms"),
     limit: v.optional(v.number()),
   },
@@ -213,7 +216,7 @@ export const listClassroomRoster = query({
     const { classroom } = await requireClassroomManager(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
       args.classroomId,
     );
 

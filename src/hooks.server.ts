@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import { getActiveOrganizationId } from '$lib/server/app-session';
 import {
 	WORKOS_SESSION_COOKIE,
 	createWorkOS,
@@ -6,11 +7,16 @@ import {
 	getWorkOSConfig,
 	isWorkOSConfigured
 } from '$lib/server/workos';
-import { bootstrapConvexSession } from '$lib/server/convex';
+import { bootstrapConvexSession, getCurrentConvexContext } from '$lib/server/convex';
 
 async function safeBootstrap(user: NonNullable<App.Locals['user']>, organizationId: string | null) {
 	try {
-		return await bootstrapConvexSession({
+		await bootstrapConvexSession({
+			user,
+			organizationId
+		});
+
+		return await getCurrentConvexContext({
 			user,
 			organizationId
 		});
@@ -27,6 +33,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.convexContext = null;
 
 	const sealedSession = event.cookies.get(WORKOS_SESSION_COOKIE);
+	const activeOrganizationId = getActiveOrganizationId(event.cookies);
 
 	if (!event.locals.workosConfigured || !sealedSession) {
 		return resolve(event);
@@ -46,13 +53,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 			event.locals.user = auth.user;
 			event.locals.session = {
 				sessionId: auth.sessionId,
-				organizationId: auth.organizationId ?? null,
-				role: auth.role ?? null
+				organizationId: activeOrganizationId
 			};
-			event.locals.convexContext = await safeBootstrap(
-				auth.user,
-				auth.organizationId ?? null
-			);
+			event.locals.convexContext = await safeBootstrap(auth.user, activeOrganizationId);
 
 			return resolve(event);
 		}
@@ -77,13 +80,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.locals.user = refreshed.user;
 		event.locals.session = {
 			sessionId: refreshed.sessionId,
-			organizationId: refreshed.organizationId ?? null,
-			role: refreshed.role ?? null
+			organizationId: activeOrganizationId
 		};
-		event.locals.convexContext = await safeBootstrap(
-			refreshed.user,
-			refreshed.organizationId ?? null
-		);
+		event.locals.convexContext = await safeBootstrap(refreshed.user, activeOrganizationId);
 
 		return resolve(event);
 	} catch {

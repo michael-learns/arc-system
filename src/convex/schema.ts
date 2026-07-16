@@ -12,16 +12,14 @@ export default defineSchema({
     isSuperAdmin: v.boolean(),
   }).index("by_tokenIdentifier", ["tokenIdentifier"]),
 
-  // Keyed by WorkOS org ID. WorkOS owns org creation and membership;
-  // this table stores app-specific settings only.
+  // Convex owns organization lifecycle and app settings.
   organizations: defineTable({
-    workosOrgId: v.string(),
     name: v.string(),
     enrollmentPolicy: v.union(
       v.literal("org_controlled"),
       v.literal("facilitator_open")
     ),
-  }).index("by_workosOrgId", ["workosOrgId"]),
+  }),
 
   // Domain roles per user+org pair. WorkOS is the source of truth for
   // who belongs to which org; this table only stores the role layer.
@@ -94,7 +92,15 @@ export default defineSchema({
     topicId: v.id("topics"),
     type: v.union(v.literal("content"), v.literal("quiz")),
     order: v.number(),
+    title: v.optional(v.string()),
+    subtitle: v.optional(v.string()),
     body: v.optional(v.string()),
+    imageDescription: v.optional(v.string()),
+    imageStorageId: v.optional(v.id("_storage")),
+    imageName: v.optional(v.string()),
+    imageContentType: v.optional(v.string()),
+    imageSize: v.optional(v.number()),
+    presenterNotes: v.optional(v.string()),
     updatedAt: v.number(),
     forkOf: v.optional(v.id("slides")),
   })

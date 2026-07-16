@@ -3,9 +3,8 @@ import { v } from "convex/values";
 import {
   buildName,
   getMembership,
-  requireOrgActor,
-  requireOrganizationByWorkosOrgId,
-  requireSuperAdminOrOrgAdmin,
+  requireOrgActorById,
+  requireSuperAdminOrOrgAdminById,
   requireUserByTokenIdentifier,
   uniqueStrings,
 } from "./lib/helpers";
@@ -46,182 +45,135 @@ export const ensureCurrentUser = mutation({
   },
 });
 
-export const ensureOrganization = mutation({
+export const bootstrapSession = mutation({
   args: {
-    workosOrgId: v.string(),
+    identity: serverIdentityValidator,
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", args.identity.tokenIdentifier),
+      )
+      .unique();
+
+    const userPatch = {
+      tokenIdentifier: args.identity.tokenIdentifier,
+      name: args.identity.name,
+      email: args.identity.email,
+      isSuperAdmin: existing?.isSuperAdmin ?? false,
+      ...(args.identity.avatarUrl ? { avatarUrl: args.identity.avatarUrl } : {}),
+    };
+
+    if (existing) {
+      await ctx.db.patch(existing._id, userPatch);
+      return await ctx.db.get(existing._id);
+    }
+
+    const insertedId = await ctx.db.insert("users", userPatch);
+    return await ctx.db.get(insertedId);
+  },
+});
+
+export const getCurrentOrganizationContext = query({
+  args: {
+    tokenIdentifier: v.string(),
+    organizationId: v.optional(v.id("organizations")),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUserByTokenIdentifier(ctx, args.tokenIdentifier);
+    if (!args.organizationId) {
+      return {
+        user,
+        organization: null,
+        membership: null,
+      };
+    }
+
+    const actor = await requireOrgActorById(
+      ctx,
+      args.tokenIdentifier,
+      args.organizationId,
+    );
+    return actor;
+  },
+});
+
+export const listUserOrganizations = query({
+  args: {
+    actorTokenIdentifier: v.string(),
+    activeOrganizationId: v.optional(v.union(v.id("organizations"), v.null())),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUserByTokenIdentifier(ctx, args.actorTokenIdentifier);
+    const memberships = await ctx.db
+      .query("memberships")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+
+    const options = await Promise.all(
+      memberships.map(async (membership) => {
+        const organization = await ctx.db.get(membership.orgId);
+        return organization
+          ? {
+              organization,
+              membership,
+              isActive: args.activeOrganizationId === organization._id,
+            }
+          : null;
+      }),
+    );
+
+    return options
+      .filter((option) => option !== null)
+      .sort((left, right) => {
+        if (left.isActive !== right.isActive) {
+          return left.isActive ? -1 : 1;
+        }
+
+        return left.organization.name.localeCompare(right.organization.name);
+      });
+  },
+});
+
+export const createOrganization = mutation({
+  args: {
+    actorTokenIdentifier: v.string(),
     name: v.string(),
     enrollmentPolicy: v.optional(enrollmentPolicyValidator),
   },
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("organizations")
-      .withIndex("by_workosOrgId", (q) => q.eq("workosOrgId", args.workosOrgId))
-      .unique();
-
-    const patch = {
-      workosOrgId: args.workosOrgId,
-      name: args.name,
-      enrollmentPolicy: args.enrollmentPolicy ?? existing?.enrollmentPolicy ?? "org_controlled",
-    } as const;
-
-    if (existing) {
-      await ctx.db.patch(existing._id, patch);
-      return await ctx.db.get(existing._id);
-    }
-
-    const organizationId = await ctx.db.insert("organizations", patch);
-    return await ctx.db.get(organizationId);
-  },
-});
-
-export const ensureMembershipForCurrentOrg = mutation({
-  args: {
-    tokenIdentifier: v.string(),
-    workosOrgId: v.string(),
-    roles: v.optional(v.array(roleValidator)),
-  },
-  handler: async (ctx, args) => {
-    const user = await requireUserByTokenIdentifier(ctx, args.tokenIdentifier);
-    const organization = await requireOrganizationByWorkosOrgId(ctx, args.workosOrgId);
-    const existing = await getMembership(ctx, user._id, organization._id);
-
-    if (existing) {
-      if (args.roles) {
-        await ctx.db.patch(existing._id, {
-          roles: uniqueStrings(args.roles) as typeof existing.roles,
-        });
-      }
-
-      return await ctx.db.get(existing._id);
-    }
-
-    const membershipId = await ctx.db.insert("memberships", {
-      userId: user._id,
-      orgId: organization._id,
-      roles: uniqueStrings(args.roles ?? []) as ("admin" | "facilitator" | "student")[],
+    const user = await requireUserByTokenIdentifier(ctx, args.actorTokenIdentifier);
+    const organizationId = await ctx.db.insert("organizations", {
+      name: args.name.trim(),
+      enrollmentPolicy: args.enrollmentPolicy ?? "org_controlled",
     });
 
-    return await ctx.db.get(membershipId);
-  },
-});
-
-export const bootstrapSession = mutation({
-  args: {
-    identity: serverIdentityValidator,
-    workosOrgId: v.optional(v.string()),
-    organizationName: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const user = await (async () => {
-      const existing = await ctx.db
-        .query("users")
-        .withIndex("by_tokenIdentifier", (q) =>
-          q.eq("tokenIdentifier", args.identity.tokenIdentifier),
-        )
-        .unique();
-
-      const userPatch = {
-        tokenIdentifier: args.identity.tokenIdentifier,
-        name: args.identity.name,
-        email: args.identity.email,
-        isSuperAdmin: existing?.isSuperAdmin ?? false,
-        ...(args.identity.avatarUrl ? { avatarUrl: args.identity.avatarUrl } : {}),
-      };
-
-      if (existing) {
-        await ctx.db.patch(existing._id, userPatch);
-        return await ctx.db.get(existing._id);
-      }
-
-      const insertedId = await ctx.db.insert("users", userPatch);
-      return await ctx.db.get(insertedId);
-    })();
-
-    if (!args.workosOrgId || !user) {
-      return {
-        user,
-        organization: null,
-        membership: null,
-      };
-    }
-
-    const organization = await (async () => {
-      const workosOrgId = args.workosOrgId!;
-      const existing = await ctx.db
-        .query("organizations")
-        .withIndex("by_workosOrgId", (q) => q.eq("workosOrgId", workosOrgId))
-        .unique();
-
-      const organizationPatch = {
-        workosOrgId,
-        name: args.organizationName ?? existing?.name ?? workosOrgId,
-        enrollmentPolicy: existing?.enrollmentPolicy ?? "org_controlled",
-      } as const;
-
-      if (existing) {
-        await ctx.db.patch(existing._id, organizationPatch);
-        return await ctx.db.get(existing._id);
-      }
-
-      const insertedId = await ctx.db.insert("organizations", organizationPatch);
-      return await ctx.db.get(insertedId);
-    })();
-
-    const existingMembership = await getMembership(ctx, user._id, organization!._id);
-    if (existingMembership) {
-      return {
-        user,
-        organization,
-        membership: await ctx.db.get(existingMembership._id),
-      };
-    }
-
     const membershipId = await ctx.db.insert("memberships", {
       userId: user._id,
-      orgId: organization!._id,
-      roles: [],
+      orgId: organizationId,
+      roles: ["admin"],
     });
 
     return {
-      user,
-      organization,
+      organization: await ctx.db.get(organizationId),
       membership: await ctx.db.get(membershipId),
     };
-  },
-});
-
-export const getCurrentOrgContext = query({
-  args: {
-    tokenIdentifier: v.string(),
-    workosOrgId: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const user = await requireUserByTokenIdentifier(ctx, args.tokenIdentifier);
-    if (!args.workosOrgId) {
-      return {
-        user,
-        organization: null,
-        membership: null,
-      };
-    }
-
-    const actor = await requireOrgActor(ctx, args.tokenIdentifier, args.workosOrgId);
-    return actor;
   },
 });
 
 export const setMembershipRoles = mutation({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     memberUserId: v.id("users"),
     roles: v.array(roleValidator),
   },
   handler: async (ctx, args) => {
-    const admin = await requireSuperAdminOrOrgAdmin(
+    const admin = await requireSuperAdminOrOrgAdminById(
       ctx,
       args.actorTokenIdentifier,
-      args.workosOrgId,
+      args.organizationId,
     );
 
     const membership = await getMembership(ctx, args.memberUserId, admin.organization._id);
@@ -244,12 +196,20 @@ export const setMembershipRoles = mutation({
 export const listOrganizationMemberships = query({
   args: {
     actorTokenIdentifier: v.string(),
-    workosOrgId: v.string(),
+    organizationId: v.id("organizations"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await requireSuperAdminOrOrgAdmin(ctx, args.actorTokenIdentifier, args.workosOrgId);
-    const actor = await requireOrgActor(ctx, args.actorTokenIdentifier, args.workosOrgId);
+    await requireSuperAdminOrOrgAdminById(
+      ctx,
+      args.actorTokenIdentifier,
+      args.organizationId,
+    );
+    const actor = await requireOrgActorById(
+      ctx,
+      args.actorTokenIdentifier,
+      args.organizationId,
+    );
     const memberships = await ctx.db
       .query("memberships")
       .withIndex("by_orgId", (q) => q.eq("orgId", actor.organization._id))

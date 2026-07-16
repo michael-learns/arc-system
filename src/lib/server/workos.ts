@@ -41,6 +41,12 @@ export function getLogoutReturnTo(url: URL) {
 	return new URL('/', url).toString();
 }
 
+export function getAuthErrorRedirect(url: URL, reason: string) {
+	const redirectUrl = new URL('/', url);
+	redirectUrl.searchParams.set('authError', reason);
+	return redirectUrl.toString();
+}
+
 export function getCookieOptions() {
 	return {
 		path: '/',

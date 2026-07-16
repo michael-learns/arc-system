@@ -10,7 +10,6 @@ declare global {
 			session: {
 				sessionId: string;
 				organizationId: string | null;
-				role: string | null;
 			} | null;
 			workosConfigured: boolean;
 			convexContext: {
@@ -19,11 +18,11 @@ declare global {
 					name: string;
 					email: string;
 					tokenIdentifier: string;
+					isSuperAdmin: boolean;
 				} | null;
 				organization: {
 					_id: string;
 					name: string;
-					workosOrgId: string;
 					enrollmentPolicy: 'org_controlled' | 'facilitator_open';
 				} | null;
 				membership: {
