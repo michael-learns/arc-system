@@ -3,7 +3,10 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 
-import { requireDoc, requireFacilitatorManagerById } from "./lib/helpers";
+import {
+	requireAuthenticatedFacilitatorManager,
+	requireDoc,
+} from "./lib/helpers";
 
 async function slideImageView(ctx: QueryCtx, slide: {
 	imageStorageId?: Id<"_storage">;
@@ -26,15 +29,10 @@ async function slideImageView(ctx: QueryCtx, slide: {
 
 export const getFacilitatorDashboard = query({
 	args: {
-		actorTokenIdentifier: v.string(),
 		organizationId: v.id("organizations"),
 	},
 	handler: async (ctx, args) => {
-		const actor = await requireFacilitatorManagerById(
-			ctx,
-			args.actorTokenIdentifier,
-			args.organizationId,
-		);
+		const actor = await requireAuthenticatedFacilitatorManager(ctx, args.organizationId);
 
 		const courses = await ctx.db
 			.query("courses")
@@ -69,7 +67,6 @@ export const getFacilitatorDashboard = query({
 
 				let slideCount = 0;
 				let questionCount = 0;
-				const topicSummaries = [];
 				for (const topic of topics) {
 					const slides = await ctx.db
 						.query("slides")
@@ -78,39 +75,13 @@ export const getFacilitatorDashboard = query({
 
 					slideCount += slides.length;
 
-					const slideSummaries = [];
 					for (const slide of slides) {
 						const questions = await ctx.db
 							.query("quizQuestions")
 							.withIndex("by_slideId_and_order", (q) => q.eq("slideId", slide._id))
 							.take(256);
 						questionCount += questions.length;
-
-						slideSummaries.push({
-							slideId: slide._id,
-							type: slide.type,
-							title: slide.title ?? null,
-							subtitle: slide.subtitle ?? null,
-							body: slide.body ?? null,
-							imageDescription: slide.imageDescription ?? null,
-							...(await slideImageView(ctx, slide)),
-							presenterNotes: slide.presenterNotes ?? null,
-							questionCount: questions.length,
-							order: slide.order,
-						});
 					}
-
-					topicSummaries.push({
-						topicId: topic._id,
-						title: topic.title,
-						order: topic.order,
-						slideCount: slides.length,
-						questionCount: slideSummaries.reduce(
-							(count, slide) => count + slide.questionCount,
-							0,
-						),
-						slides: slideSummaries.sort((left, right) => left.order - right.order),
-					});
 				}
 
 				return {
@@ -122,7 +93,6 @@ export const getFacilitatorDashboard = query({
 					slideCount,
 					questionCount,
 					classroomCount: classroomCountsByCourseId.get(course._id) ?? 0,
-					topics: topicSummaries.sort((left, right) => left.order - right.order),
 				};
 			}),
 		);
@@ -170,16 +140,11 @@ export const getFacilitatorDashboard = query({
 
 export const getFacilitatorCourseEditor = query({
 	args: {
-		actorTokenIdentifier: v.string(),
 		organizationId: v.id("organizations"),
 		courseId: v.id("courses"),
 	},
 	handler: async (ctx, args) => {
-		const actor = await requireFacilitatorManagerById(
-			ctx,
-			args.actorTokenIdentifier,
-			args.organizationId,
-		);
+		const actor = await requireAuthenticatedFacilitatorManager(ctx, args.organizationId);
 		const course = await requireDoc(ctx, args.courseId, "Course not found.");
 
 		if (course.ownerUserId !== actor.user._id) {
@@ -221,6 +186,17 @@ export const getFacilitatorCourseEditor = query({
 					presenterNotes: slide.presenterNotes ?? null,
 					order: slide.order,
 					questionCount: questions.length,
+					questions: questions
+						.sort((left, right) => left.order - right.order)
+						.map((question) => ({
+							questionId: question._id,
+							type: question.type,
+							prompt: question.prompt,
+							options: question.options ?? null,
+							correctOptions: question.correctOptions ?? null,
+							acceptedAnswers: question.acceptedAnswers ?? null,
+							order: question.order,
+						})),
 				});
 			}
 

@@ -62,6 +62,47 @@ export async function requireUserByTokenIdentifier(
   return user;
 }
 
+export async function requireAuthenticatedIdentity(ctx: Ctx) {
+  const identity = await ctx.auth.getUserIdentity();
+  assert(identity, "Not authenticated.");
+  return identity;
+}
+
+export async function requireAuthenticatedUser(ctx: Ctx) {
+  const identity = await requireAuthenticatedIdentity(ctx);
+  const user = await getUserByTokenIdentifier(ctx, identity.tokenIdentifier);
+  assert(user, "User has not been bootstrapped in Convex.");
+  return user;
+}
+
+export async function requireAuthenticatedOrgActor(
+  ctx: Ctx,
+  organizationId: Id<"organizations">,
+) {
+  const user = await requireAuthenticatedUser(ctx);
+  const organization = await requireOrganizationById(ctx, organizationId);
+  const membership = await requireMembership(ctx, user._id, organization._id);
+
+  return { user, organization, membership };
+}
+
+export async function requireAuthenticatedFacilitatorManager(
+  ctx: Ctx,
+  organizationId: Id<"organizations">,
+) {
+  const actor = await requireAuthenticatedOrgActor(ctx, organizationId);
+  if (actor.user.isSuperAdmin) {
+    return actor;
+  }
+
+  requireAnyRole(
+    actor.membership,
+    ["admin", "facilitator"],
+    "Facilitator or admin access is required.",
+  );
+  return actor;
+}
+
 export async function requireOrganizationById(
   ctx: Ctx,
   organizationId: Id<"organizations">,

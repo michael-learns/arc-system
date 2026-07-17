@@ -1,4 +1,5 @@
 import { isRedirect, redirect } from '@sveltejs/kit';
+import { withServerConvexToken } from 'convex-svelte/sveltekit/server';
 import {
 	WORKOS_SESSION_COOKIE,
 	WORKOS_STATE_COOKIE,
@@ -8,6 +9,9 @@ import {
 	getWorkOSConfig,
 	isWorkOSConfigured
 } from '$lib/server/workos';
+import {
+	bootstrapAuthenticatedConvexSession
+} from '$lib/server/convex';
 
 export const GET = async ({ cookies, url }) => {
 	if (!isWorkOSConfigured()) {
@@ -45,6 +49,16 @@ export const GET = async ({ cookies, url }) => {
 		}
 
 		cookies.set(WORKOS_SESSION_COOKIE, auth.sealedSession, getCookieOptions());
+
+		// Bootstrap the verified Convex identity during sign-in. A Convex hiccup
+		// should not turn a successful WorkOS login into a failed login.
+		try {
+			await withServerConvexToken(auth.accessToken, async () => {
+				await bootstrapAuthenticatedConvexSession(auth.user);
+			});
+		} catch (bootstrapError) {
+			console.error('Convex session bootstrap failed after login', bootstrapError);
+		}
 
 		throw redirect(302, '/dashboard');
 	} catch (error) {

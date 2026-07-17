@@ -28,6 +28,7 @@ async function seedFacilitatorWorkspace() {
 	await t.mutation(api.auth.bootstrapSession, {
 		identity: facilitatorIdentity
 	});
+	const facilitatorClient = t.withIdentity(facilitatorIdentity);
 
 	const facilitator = await t.query(api.auth.getCurrentOrganizationContext, {
 		tokenIdentifier: facilitatorIdentity.tokenIdentifier
@@ -52,30 +53,26 @@ async function seedFacilitatorWorkspace() {
 		description: "Doctrine of God",
 	});
 
-	const topic = await t.mutation(api.courses.createTopic, {
-		actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+	const topic = await facilitatorClient.mutation(api.courses.createTopic, {
 		organizationId: organization!._id,
 		courseId: course!._id,
 		title: "Divine Attributes",
 	});
 
-	await t.mutation(api.courses.createSlide, {
-		actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+	await facilitatorClient.mutation(api.courses.createSlide, {
 		organizationId: organization!._id,
 		topicId: topic!._id,
 		type: "content",
 		body: "God is self-existent.",
 	});
 
-	const quizSlide = await t.mutation(api.courses.createSlide, {
-		actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+	const quizSlide = await facilitatorClient.mutation(api.courses.createSlide, {
 		organizationId: organization!._id,
 		topicId: topic!._id,
 		type: "quiz",
 	});
 
-	await t.mutation(api.courses.createQuizQuestion, {
-		actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+	await facilitatorClient.mutation(api.courses.createQuizQuestion, {
 		organizationId: organization!._id,
 		slideId: quizSlide!._id,
 		type: "multiple_choice",
@@ -112,15 +109,14 @@ async function seedFacilitatorWorkspace() {
 		studentTokenIdentifier: studentIdentity.tokenIdentifier,
 	});
 
-	return { t, organization, course, topic, quizSlide };
+	return { t, facilitatorClient, organization, course, topic, quizSlide };
 }
 
 describe("facilitator dashboard", () => {
 	test("facilitator can view course and classroom summaries", async () => {
-		const { t, organization } = await seedFacilitatorWorkspace();
+		const { facilitatorClient, organization } = await seedFacilitatorWorkspace();
 
-		const dashboard = await t.query(api.dashboard.getFacilitatorDashboard, {
-			actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+		const dashboard = await facilitatorClient.query(api.dashboard.getFacilitatorDashboard, {
 			organizationId: organization!._id,
 		});
 
@@ -151,10 +147,9 @@ describe("facilitator dashboard", () => {
 	});
 
 	test("facilitator can update and delete slides", async () => {
-		const { t, organization, course, topic, quizSlide } = await seedFacilitatorWorkspace();
+		const { facilitatorClient, organization, course, topic, quizSlide } = await seedFacilitatorWorkspace();
 
-		const updated = await t.mutation(api.courses.updateSlide, {
-			actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+		const updated = await facilitatorClient.mutation(api.courses.updateSlide, {
 			organizationId: organization!._id,
 			slideId: quizSlide!._id,
 			type: "content",
@@ -174,8 +169,7 @@ describe("facilitator dashboard", () => {
 			presenterNotes: "Pause for student reflection before moving on.",
 		});
 
-		const editor = await t.query(api.dashboard.getFacilitatorCourseEditor, {
-			actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+		const editor = await facilitatorClient.query(api.dashboard.getFacilitatorCourseEditor, {
 			organizationId: organization!._id,
 			courseId: course!._id,
 		});
@@ -188,14 +182,12 @@ describe("facilitator dashboard", () => {
 			presenterNotes: "Pause for student reflection before moving on.",
 		});
 
-		await t.mutation(api.courses.deleteSlide, {
-			actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+		await facilitatorClient.mutation(api.courses.deleteSlide, {
 			organizationId: organization!._id,
 			slideId: updated!._id,
 		});
 
-		const dashboard = await t.query(api.dashboard.getFacilitatorDashboard, {
-			actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+		const dashboard = await facilitatorClient.query(api.dashboard.getFacilitatorDashboard, {
 			organizationId: organization!._id,
 		});
 
@@ -205,11 +197,17 @@ describe("facilitator dashboard", () => {
 			questionCount: 0,
 		});
 
-		const remainingSlides = await t.mutation(api.courses.reorderSlides, {
-			actorTokenIdentifier: facilitatorIdentity.tokenIdentifier,
+		const editorAfterDelete = await facilitatorClient.query(
+			api.dashboard.getFacilitatorCourseEditor,
+			{
+				organizationId: organization!._id,
+				courseId: course!._id,
+			},
+		);
+		const remainingSlides = await facilitatorClient.mutation(api.courses.reorderSlides, {
 			organizationId: organization!._id,
 			topicId: topic!._id,
-			slideIds: dashboard.courses[0].topics[0].slides.map((slide) => slide.slideId),
+			slideIds: editorAfterDelete.course.topics[0].slides.map((slide) => slide.slideId),
 		});
 
 		expect(remainingSlides).toHaveLength(1);

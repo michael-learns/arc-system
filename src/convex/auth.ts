@@ -4,6 +4,9 @@ import {
   buildName,
   getMembership,
   requireOrgActorById,
+  requireAuthenticatedIdentity,
+  requireAuthenticatedOrgActor,
+  requireAuthenticatedUser,
   requireSuperAdminOrOrgAdminById,
   requireUserByTokenIdentifier,
   uniqueStrings,
@@ -13,6 +16,121 @@ import {
   roleValidator,
   serverIdentityValidator,
 } from "./lib/validators";
+
+const authenticatedProfileValidator = v.object({
+  name: v.string(),
+  email: v.string(),
+  avatarUrl: v.optional(v.string()),
+});
+
+function profilesMatch(
+  existing: { name: string; email: string; avatarUrl?: string },
+  profile: { name: string; email: string; avatarUrl?: string },
+) {
+  return (
+    existing.name === profile.name &&
+    existing.email === profile.email &&
+    existing.avatarUrl === profile.avatarUrl
+  );
+}
+
+export const bootstrapAuthenticatedSession = mutation({
+  args: {
+    profile: authenticatedProfileValidator,
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireAuthenticatedIdentity(ctx);
+    let existing = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", identity.tokenIdentifier),
+      )
+      .unique();
+
+    // Older server-only sessions used workos:<user id>. Move them to the
+    // verified JWT identifier once, without duplicating memberships or data.
+    if (!existing) {
+      const legacy = await ctx.db
+        .query("users")
+        .withIndex("by_tokenIdentifier", (q) =>
+          q.eq("tokenIdentifier", `workos:${identity.subject}`),
+        )
+        .unique();
+      if (legacy) {
+        await ctx.db.patch(legacy._id, { tokenIdentifier: identity.tokenIdentifier });
+        existing = await ctx.db.get(legacy._id);
+      }
+    }
+
+    const profile = {
+      tokenIdentifier: identity.tokenIdentifier,
+      name: args.profile.name.trim() || args.profile.email,
+      email: args.profile.email,
+      isSuperAdmin: existing?.isSuperAdmin ?? false,
+      ...(args.profile.avatarUrl ? { avatarUrl: args.profile.avatarUrl } : {}),
+    };
+
+    if (existing) {
+      if (
+        existing.tokenIdentifier !== profile.tokenIdentifier ||
+        existing.isSuperAdmin !== profile.isSuperAdmin ||
+        !profilesMatch(existing, profile)
+      ) {
+        await ctx.db.patch(existing._id, profile);
+      }
+      return await ctx.db.get(existing._id);
+    }
+
+    const insertedId = await ctx.db.insert("users", profile);
+    return await ctx.db.get(insertedId);
+  },
+});
+
+export const getAuthenticatedOrganizationContext = query({
+  args: {
+    organizationId: v.optional(v.id("organizations")),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthenticatedUser(ctx);
+    if (!args.organizationId) {
+      return { user, organization: null, membership: null };
+    }
+
+    return await requireAuthenticatedOrgActor(ctx, args.organizationId);
+  },
+});
+
+export const listAuthenticatedUserOrganizations = query({
+  args: {
+    activeOrganizationId: v.optional(v.union(v.id("organizations"), v.null())),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireAuthenticatedUser(ctx);
+    const memberships = await ctx.db
+      .query("memberships")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    const options = await Promise.all(
+      memberships.map(async (membership) => {
+        const organization = await ctx.db.get(membership.orgId);
+        return organization
+          ? {
+              organization,
+              membership,
+              isActive: args.activeOrganizationId === organization._id,
+            }
+          : null;
+      }),
+    );
+
+    return options
+      .filter((option) => option !== null)
+      .sort((left, right) => {
+        if (left.isActive !== right.isActive) return left.isActive ? -1 : 1;
+        return left.organization.name.localeCompare(right.organization.name);
+      });
+  },
+});
 
 export const ensureCurrentUser = mutation({
   args: {

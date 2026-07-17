@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import { withServerConvexToken } from 'convex-svelte/sveltekit/server';
 import { getActiveOrganizationId } from '$lib/server/app-session';
 import {
 	WORKOS_SESSION_COOKIE,
@@ -7,23 +8,41 @@ import {
 	getWorkOSConfig,
 	isWorkOSConfigured
 } from '$lib/server/workos';
-import { bootstrapConvexSession, getCurrentConvexContext } from '$lib/server/convex';
+import {
+	bootstrapAuthenticatedConvexSession,
+	getAuthenticatedConvexContext
+} from '$lib/server/convex';
 
 async function safeBootstrap(user: NonNullable<App.Locals['user']>, organizationId: string | null) {
 	try {
-		await bootstrapConvexSession({
-			user,
-			organizationId
-		});
-
-		return await getCurrentConvexContext({
-			user,
-			organizationId
-		});
+		return await getAuthenticatedConvexContext(organizationId);
 	} catch (error) {
-		console.error('Convex session bootstrap failed', error);
-		return null;
+		try {
+			// Existing sessions only need this once while their legacy WorkOS ID is
+			// migrated to the verified JWT identity.
+			await bootstrapAuthenticatedConvexSession(user);
+			return await getAuthenticatedConvexContext(organizationId);
+		} catch (bootstrapError) {
+			console.error('Convex session bootstrap failed', bootstrapError, error);
+			return null;
+		}
 	}
+}
+
+async function resolveAuthenticated(
+	event: Parameters<Handle>[0]['event'],
+	resolve: Parameters<Handle>[0]['resolve'],
+	accessToken: string,
+	user: NonNullable<App.Locals['user']>,
+	sessionId: string,
+	organizationId: string | null
+) {
+	return withServerConvexToken(accessToken, async () => {
+		event.locals.user = user;
+		event.locals.session = { sessionId, organizationId };
+		event.locals.convexContext = await safeBootstrap(user, organizationId);
+		return resolve(event);
+	});
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -50,14 +69,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const auth = await session.authenticate();
 
 		if (auth.authenticated) {
-			event.locals.user = auth.user;
-			event.locals.session = {
-				sessionId: auth.sessionId,
-				organizationId: activeOrganizationId
-			};
-			event.locals.convexContext = await safeBootstrap(auth.user, activeOrganizationId);
-
-			return resolve(event);
+			return resolveAuthenticated(
+				event,
+				resolve,
+				auth.accessToken,
+				auth.user,
+				auth.sessionId,
+				activeOrganizationId
+			);
 		}
 
 		if (auth.reason === 'no_session_cookie_provided') {
@@ -76,15 +95,20 @@ export const handle: Handle = async ({ event, resolve }) => {
 			return resolve(event);
 		}
 
-		event.cookies.set(WORKOS_SESSION_COOKIE, refreshed.sealedSession, getCookieOptions());
-		event.locals.user = refreshed.user;
-		event.locals.session = {
-			sessionId: refreshed.sessionId,
-			organizationId: activeOrganizationId
-		};
-		event.locals.convexContext = await safeBootstrap(refreshed.user, activeOrganizationId);
+		if (!refreshed.session?.accessToken) {
+			event.cookies.delete(WORKOS_SESSION_COOKIE, { path: '/' });
+			return resolve(event);
+		}
 
-		return resolve(event);
+		event.cookies.set(WORKOS_SESSION_COOKIE, refreshed.sealedSession, getCookieOptions());
+		return resolveAuthenticated(
+			event,
+			resolve,
+			refreshed.session.accessToken,
+			refreshed.user,
+			refreshed.sessionId,
+			activeOrganizationId
+		);
 	} catch {
 		event.cookies.delete(WORKOS_SESSION_COOKIE, { path: '/' });
 		return resolve(event);

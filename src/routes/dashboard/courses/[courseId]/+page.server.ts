@@ -3,11 +3,16 @@ import type { User } from '@workos-inc/node';
 import { getActiveOrganizationId } from '$lib/server/app-session';
 import {
 	attachCourseSlideImageWorkspace,
+	createCourseQuizQuestionWorkspace,
 	createCourseSectionWorkspace,
 	createCourseSlideWorkspace,
 	deleteCourseSlideWorkspace,
 	generateCourseSlideImageUploadUrlWorkspace,
 	getFacilitatorCourseEditorView,
+	reorderCourseQuizQuestionsWorkspace,
+	reorderCourseSectionsWorkspace,
+	reorderCourseSlidesWorkspace,
+	updateCourseQuizQuestionWorkspace,
 	updateCourseSlideWorkspace
 } from '$lib/server/convex';
 import {
@@ -31,6 +36,57 @@ async function getActiveOrganizationOption(
 
 function hasFacilitatorAccess(roles: string[], isSuperAdmin: boolean) {
 	return isSuperAdmin || roles.includes('admin') || roles.includes('facilitator');
+}
+
+// Resolve the active org and facilitator access in one shot for the quiz/reorder
+// actions, whose payloads are simple enough not to echo form values.
+async function resolveFacilitatorOrg(
+	user: User,
+	activeOrganizationId: string | null,
+	isSuperAdmin: boolean
+) {
+	const organization = await getActiveOrganizationOption(user, activeOrganizationId);
+	if (!organization) return { organization: null, access: false };
+	return { organization, access: hasFacilitatorAccess(organization.roles, isSuperAdmin) };
+}
+
+const QUESTION_TYPES = [
+	'multiple_choice',
+	'multi_select',
+	'true_false',
+	'fill_in_the_blank'
+] as const;
+type QuestionType = (typeof QUESTION_TYPES)[number];
+
+function stringList(values: FormDataEntryValue[]) {
+	return values.map((value) => String(value).trim()).filter(Boolean);
+}
+
+// Build the type-specific Convex payload from form fields; returns an error
+// string when required inputs are missing.
+function questionPayloadFromForm(type: QuestionType, formData: FormData) {
+	if (type === 'fill_in_the_blank') {
+		const acceptedAnswers = stringList(formData.getAll('acceptedAnswers'));
+		if (!acceptedAnswers.length) {
+			return { error: 'Add at least one accepted answer.' as const };
+		}
+		return { payload: { acceptedAnswers } };
+	}
+
+	const options = type === 'true_false' ? ['True', 'False'] : stringList(formData.getAll('options'));
+	if (options.length < 2) {
+		return { error: 'Add at least two answer options.' as const };
+	}
+
+	const correctOptions = formData
+		.getAll('correctOptions')
+		.map(Number)
+		.filter((index) => Number.isInteger(index) && index >= 0 && index < options.length);
+	if (!correctOptions.length) {
+		return { error: 'Mark at least one correct answer.' as const };
+	}
+
+	return { payload: { options, correctOptions } };
 }
 
 const MAX_SLIDE_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -502,6 +558,234 @@ export const actions = {
 				slideId
 			}
 		};
+	},
+	createQuestion: async ({ cookies, locals, params, request }) => {
+		if (!locals.user) {
+			throw redirect(302, '/login');
+		}
+
+		const formData = await request.formData();
+		const slideId = formData.get('slideId');
+		const type = formData.get('type');
+		const prompt = formData.get('prompt');
+		const { organization, access } = await resolveFacilitatorOrg(
+			locals.user,
+			getActiveOrganizationId(cookies),
+			Boolean(locals.convexContext?.user?.isSuperAdmin)
+		);
+
+		if (!organization) {
+			return fail(400, { questionError: 'Pick an organization before adding a question.' });
+		}
+		if (!access) {
+			return fail(403, {
+				questionError: 'Only organization admins and facilitators can add questions.'
+			});
+		}
+		if (typeof slideId !== 'string' || !slideId) {
+			return fail(400, { questionError: 'Choose a slide before adding a question.' });
+		}
+		if (typeof prompt !== 'string' || !prompt.trim()) {
+			return fail(400, { questionError: 'Write the question prompt first.' });
+		}
+		if (typeof type !== 'string' || !QUESTION_TYPES.includes(type as QuestionType)) {
+			return fail(400, { questionError: 'Choose a question type.' });
+		}
+
+		const result = questionPayloadFromForm(type as QuestionType, formData);
+		if ('error' in result) {
+			return fail(400, { questionError: result.error });
+		}
+
+		try {
+			await createCourseQuizQuestionWorkspace({
+				user: locals.user,
+				organizationId: organization.organizationId,
+				slideId,
+				type: type as QuestionType,
+				prompt: prompt.trim(),
+				...result.payload
+			});
+		} catch (error) {
+			console.error('Convex question creation failed', error);
+			return fail(500, { questionError: 'We could not add that question right now.' });
+		}
+
+		throw redirect(303, `/dashboard/courses/${params.courseId}`);
+	},
+	updateQuestion: async ({ cookies, locals, params, request }) => {
+		if (!locals.user) {
+			throw redirect(302, '/login');
+		}
+
+		const formData = await request.formData();
+		const questionId = formData.get('questionId');
+		const slideId = formData.get('slideId');
+		const type = formData.get('type');
+		const prompt = formData.get('prompt');
+		const { organization, access } = await resolveFacilitatorOrg(
+			locals.user,
+			getActiveOrganizationId(cookies),
+			Boolean(locals.convexContext?.user?.isSuperAdmin)
+		);
+
+		if (!organization) {
+			return fail(400, { questionError: 'Pick an organization before updating a question.' });
+		}
+		if (!access) {
+			return fail(403, {
+				questionError: 'Only organization admins and facilitators can update questions.'
+			});
+		}
+		if (typeof questionId !== 'string' || !questionId) {
+			return fail(400, { questionError: 'Choose a question before saving changes.' });
+		}
+		if (typeof prompt !== 'string' || !prompt.trim()) {
+			return fail(400, { questionError: 'Write the question prompt first.' });
+		}
+		if (typeof type !== 'string' || !QUESTION_TYPES.includes(type as QuestionType)) {
+			return fail(400, { questionError: 'Choose a question type.' });
+		}
+
+		const result = questionPayloadFromForm(type as QuestionType, formData);
+		if ('error' in result) {
+			return fail(400, { questionError: result.error });
+		}
+
+		try {
+			await updateCourseQuizQuestionWorkspace({
+				user: locals.user,
+				organizationId: organization.organizationId,
+				questionId,
+				type: type as QuestionType,
+				prompt: prompt.trim(),
+				...result.payload
+			});
+		} catch (error) {
+			console.error('Convex question update failed', error);
+			return fail(500, { questionError: 'We could not save that question right now.' });
+		}
+
+		throw redirect(303, `/dashboard/courses/${params.courseId}`);
+	},
+	reorderQuestions: async ({ cookies, locals, params, request }) => {
+		if (!locals.user) {
+			throw redirect(302, '/login');
+		}
+
+		const formData = await request.formData();
+		const slideId = formData.get('slideId');
+		const questionIds = stringList(formData.getAll('questionIds'));
+		const { organization, access } = await resolveFacilitatorOrg(
+			locals.user,
+			getActiveOrganizationId(cookies),
+			Boolean(locals.convexContext?.user?.isSuperAdmin)
+		);
+
+		if (!organization) {
+			return fail(400, { reorderError: 'Pick an organization before reordering questions.' });
+		}
+		if (!access) {
+			return fail(403, {
+				reorderError: 'Only organization admins and facilitators can reorder questions.'
+			});
+		}
+		if (typeof slideId !== 'string' || !slideId || !questionIds.length) {
+			return fail(400, { reorderError: 'Nothing to reorder.' });
+		}
+
+		try {
+			await reorderCourseQuizQuestionsWorkspace({
+				user: locals.user,
+				organizationId: organization.organizationId,
+				slideId,
+				questionIds
+			});
+		} catch (error) {
+			console.error('Convex question reorder failed', error);
+			return fail(500, { reorderError: 'We could not reorder those questions right now.' });
+		}
+
+		throw redirect(303, `/dashboard/courses/${params.courseId}`);
+	},
+	reorderSections: async ({ cookies, locals, params, request }) => {
+		if (!locals.user) {
+			throw redirect(302, '/login');
+		}
+
+		const formData = await request.formData();
+		const topicIds = stringList(formData.getAll('topicIds'));
+		const { organization, access } = await resolveFacilitatorOrg(
+			locals.user,
+			getActiveOrganizationId(cookies),
+			Boolean(locals.convexContext?.user?.isSuperAdmin)
+		);
+
+		if (!organization) {
+			return fail(400, { reorderError: 'Pick an organization before reordering sections.' });
+		}
+		if (!access) {
+			return fail(403, {
+				reorderError: 'Only organization admins and facilitators can reorder sections.'
+			});
+		}
+		if (!topicIds.length) {
+			return fail(400, { reorderError: 'Nothing to reorder.' });
+		}
+
+		try {
+			await reorderCourseSectionsWorkspace({
+				user: locals.user,
+				organizationId: organization.organizationId,
+				courseId: params.courseId,
+				topicIds
+			});
+		} catch (error) {
+			console.error('Convex section reorder failed', error);
+			return fail(500, { reorderError: 'We could not reorder those sections right now.' });
+		}
+
+		throw redirect(303, `/dashboard/courses/${params.courseId}`);
+	},
+	reorderSlides: async ({ cookies, locals, params, request }) => {
+		if (!locals.user) {
+			throw redirect(302, '/login');
+		}
+
+		const formData = await request.formData();
+		const topicId = formData.get('topicId');
+		const slideIds = stringList(formData.getAll('slideIds'));
+		const { organization, access } = await resolveFacilitatorOrg(
+			locals.user,
+			getActiveOrganizationId(cookies),
+			Boolean(locals.convexContext?.user?.isSuperAdmin)
+		);
+
+		if (!organization) {
+			return fail(400, { reorderError: 'Pick an organization before reordering slides.' });
+		}
+		if (!access) {
+			return fail(403, {
+				reorderError: 'Only organization admins and facilitators can reorder slides.'
+			});
+		}
+		if (typeof topicId !== 'string' || !topicId || !slideIds.length) {
+			return fail(400, { reorderError: 'Nothing to reorder.' });
+		}
+
+		try {
+			await reorderCourseSlidesWorkspace({
+				user: locals.user,
+				organizationId: organization.organizationId,
+				topicId,
+				slideIds
+			});
+		} catch (error) {
+			console.error('Convex slide reorder failed', error);
+			return fail(500, { reorderError: 'We could not reorder those slides right now.' });
+		}
+
+		throw redirect(303, `/dashboard/courses/${params.courseId}`);
 	}
 };
 
@@ -514,11 +798,9 @@ export const load = async ({ cookies, locals, params }) => {
 		locals.user,
 		getActiveOrganizationId(cookies)
 	);
-
 	if (!activeOrganization) {
 		throw redirect(303, '/dashboard');
 	}
-
 	if (
 		!hasFacilitatorAccess(
 			activeOrganization.roles,
@@ -528,13 +810,11 @@ export const load = async ({ cookies, locals, params }) => {
 		throw redirect(303, '/dashboard');
 	}
 
-	const editor = await getFacilitatorCourseEditorView({
-		user: locals.user,
-		organizationId: activeOrganization.organizationId,
-		courseId: params.courseId
-	});
-
 	return {
-		editor
+		editor: await getFacilitatorCourseEditorView({
+			user: locals.user,
+			organizationId: activeOrganization.organizationId,
+			courseId: params.courseId
+		})
 	};
 };

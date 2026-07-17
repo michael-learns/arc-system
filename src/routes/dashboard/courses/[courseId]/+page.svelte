@@ -9,7 +9,23 @@
 	import { Toaster } from '$lib/components/ui/sonner';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import type { SubmitFunction } from '@sveltejs/kit';
+	import { useMutation } from 'convex-svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
+	import { api } from '../../../../convex/_generated/api.js';
+	import type { Id } from '../../../../convex/_generated/dataModel.js';
+
+	type QuestionType = 'multiple_choice' | 'multi_select' | 'true_false' | 'fill_in_the_blank';
+
+	type EditorQuestion = {
+		questionId: string;
+		type: QuestionType;
+		prompt: string;
+		options: string[] | null;
+		correctOptions: number[] | null;
+		acceptedAnswers: string[] | null;
+		order: number;
+	};
 
 	type EditorSlide = {
 		slideId: string;
@@ -26,6 +42,14 @@
 		presenterNotes: string | null;
 		order: number;
 		questionCount: number;
+		questions: EditorQuestion[];
+	};
+
+	const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
+		multiple_choice: 'Multiple choice',
+		multi_select: 'Multi-select',
+		true_false: 'True / False',
+		fill_in_the_blank: 'Fill in the blank'
 	};
 
 	type EditorTopic = {
@@ -43,12 +67,31 @@
 	const course = $derived(editor.course);
 	const initialTopics = getInitialTopics();
 	let topics = $state<EditorTopic[]>(initialTopics);
+	let pendingMutations = $state(0);
+	let lastSyncedEditor = untrack(() => editor);
 
 	let activeTopicId = $state(initialTopics[0]?.topicId ?? '');
 	let selectedSlideId = $state('');
 	let addMenuOpen = $state(false);
+	let addMenuClosing = $state(false);
+	let addMenuCloseTimer: number | null = null;
 	let slideStatus = $state('');
 	let slideActionError = $state('');
+
+	const createTopicMutation = useMutation(api.courses.createTopic);
+	const reorderTopicsMutation = useMutation(api.courses.reorderTopics);
+	const createSlideMutation = useMutation(api.courses.createSlide);
+	const updateSlideMutation = useMutation(api.courses.updateSlide);
+	const generateSlideImageUploadUrlMutation = useMutation(api.courses.generateSlideImageUploadUrl);
+	const attachSlideImageMutation = useMutation(api.courses.attachSlideImage);
+	const deleteSlideMutation = useMutation(api.courses.deleteSlide);
+	const reorderSlidesMutation = useMutation(api.courses.reorderSlides);
+	const createQuestionMutation = useMutation(api.courses.createQuizQuestion);
+	const updateQuestionMutation = useMutation(api.courses.updateQuizQuestion);
+	const reorderQuestionsMutation = useMutation(api.courses.reorderQuizQuestions);
+
+	const organizationId = $derived(editor.organization.id as Id<'organizations'>);
+	const courseId = $derived(course.courseId as Id<'courses'>);
 
 	const activeTopic = $derived(
 		topics.find((t) => t.topicId === activeTopicId) ?? topics[0] ?? null
@@ -78,6 +121,34 @@
 		return cloneTopics(data.editor.course.topics as EditorTopic[]);
 	}
 
+	$effect(() => {
+		const nextEditor = data.editor;
+		if (nextEditor === lastSyncedEditor || pendingMutations > 0) return;
+
+		lastSyncedEditor = nextEditor;
+		const nextTopics = cloneTopics(nextEditor.course.topics as EditorTopic[]);
+		const nextActiveId = nextTopics.some((topic) => topic.topicId === activeTopicId)
+			? activeTopicId
+			: (nextTopics[0]?.topicId ?? '');
+		const nextActive = nextTopics.find((topic) => topic.topicId === nextActiveId);
+		const nextSelectedId = nextActive?.slides.some((slide) => slide.slideId === selectedSlideId)
+			? selectedSlideId
+			: (nextActive?.slides[0]?.slideId ?? '');
+
+		topics = nextTopics;
+		activeTopicId = nextActiveId;
+		selectedSlideId = nextSelectedId;
+	});
+
+	async function runMutation<T>(mutation: () => Promise<T>) {
+		pendingMutations += 1;
+		try {
+			return await mutation();
+		} finally {
+			pendingMutations -= 1;
+		}
+	}
+
 	function normalizeField(value: FormDataEntryValue | null) {
 		return typeof value === 'string' && value.trim() ? value.trim() : null;
 	}
@@ -89,6 +160,43 @@
 			body: normalizeField(formData.get('body')),
 			imageDescription: normalizeField(formData.get('imageDescription')),
 			presenterNotes: normalizeField(formData.get('presenterNotes'))
+		};
+	}
+
+	function toEditorSlide(
+		slide: {
+			_id: string;
+			type: 'content' | 'quiz';
+			order: number;
+			title?: string;
+			subtitle?: string;
+			body?: string;
+			imageDescription?: string;
+			imageStorageId?: string;
+			imageUrl?: string | null;
+			imageName?: string;
+			imageContentType?: string;
+			imageSize?: number;
+			presenterNotes?: string;
+		},
+		questions: EditorQuestion[] = []
+	): EditorSlide {
+		return {
+			slideId: slide._id,
+			type: slide.type,
+			title: slide.title ?? null,
+			subtitle: slide.subtitle ?? null,
+			body: slide.body ?? null,
+			imageDescription: slide.imageDescription ?? null,
+			imageStorageId: slide.imageStorageId ?? null,
+			imageUrl: slide.imageUrl ?? null,
+			imageName: slide.imageName ?? null,
+			imageContentType: slide.imageContentType ?? null,
+			imageSize: slide.imageSize ?? null,
+			presenterNotes: slide.presenterNotes ?? null,
+			order: slide.order,
+			questionCount: questions.length,
+			questions
 		};
 	}
 
@@ -147,12 +255,13 @@
 			imageSize: null,
 			presenterNotes: null,
 			order: topic?.slides.length ?? 0,
-			questionCount: 0
+			questionCount: 0,
+			questions: []
 		};
 
 		updateTopicSlides(topicId, (slides) => [...slides, tempSlide]);
 		selectedSlideId = tempSlide.slideId;
-		addMenuOpen = false;
+		closeAddMenu();
 		return tempSlide.slideId;
 	}
 
@@ -204,6 +313,42 @@
 		topics = cloneTopics(snapshot);
 	}
 
+	function clearAddMenuCloseTimer() {
+		if (addMenuCloseTimer === null) return;
+		window.clearTimeout(addMenuCloseTimer);
+		addMenuCloseTimer = null;
+	}
+
+	function openAddMenu() {
+		clearAddMenuCloseTimer();
+		addMenuClosing = false;
+		addMenuOpen = true;
+	}
+
+	function closeAddMenu() {
+		if (!addMenuOpen) return;
+		clearAddMenuCloseTimer();
+		addMenuOpen = false;
+		addMenuClosing = true;
+
+		const closeMs =
+			Number.parseFloat(
+				getComputedStyle(document.documentElement).getPropertyValue('--dropdown-close-dur')
+			) || 150;
+
+		addMenuCloseTimer = window.setTimeout(() => {
+			addMenuClosing = false;
+			addMenuCloseTimer = null;
+		}, closeMs);
+	}
+
+	function toggleAddMenu() {
+		if (addMenuOpen) closeAddMenu();
+		else openAddMenu();
+	}
+
+	onDestroy(clearAddMenuCloseTimer);
+
 	function markSaved(message = 'Saved', toastId?: string | number) {
 		slideStatus = message;
 		toast.success(message, toastId ? { id: toastId } : undefined);
@@ -244,43 +389,44 @@
 	}
 
 	function enhanceCreateSlide(topicId: string, type: 'content' | 'quiz'): SubmitFunction {
-		return () => {
+		return async ({ cancel }) => {
+			cancel();
 			const snapshot = cloneTopics(topics);
 			const tempSlideId = addOptimisticSlide(topicId, type);
 			slideActionError = '';
 			slideStatus = 'Saving...';
 			const toastId = toast.loading('Adding slide...');
 
-			return async ({ result }) => {
-				if (result.type === 'success') {
-					const payload = result.data as { slideCreated?: { slide?: EditorSlide | null } };
-					if (payload.slideCreated?.slide) {
-						replaceOptimisticSlide(tempSlideId, payload.slideCreated.slide);
-					}
-					markSaved('Slide ready', toastId);
-					return;
-				}
-
-				handleSlideFailure(snapshot, result, toastId);
-			};
+			try {
+				const saved = await runMutation(() =>
+					createSlideMutation({
+						organizationId,
+						topicId: topicId as Id<'topics'>,
+						type
+					})
+				);
+				if (saved) replaceOptimisticSlide(tempSlideId, toEditorSlide(saved));
+				markSaved('Slide ready', toastId);
+			} catch (error) {
+				handleSlideFailure(snapshot, error, toastId);
+			}
 		};
 	}
 
-	const enhanceUpdateSlide: SubmitFunction = (submit) => {
+	const enhanceUpdateSlide: SubmitFunction = async (submit) => {
 		if (!submit?.formData) {
 			return;
 		}
 
 		const { cancel, formData } = submit;
+		cancel();
 		const slideId = String(formData.get('slideId') ?? '');
 		if (!slideId) {
-			cancel();
 			slideActionError = 'Choose a slide before saving it.';
 			return;
 		}
 
 		if (slideId.startsWith('temp-')) {
-			cancel();
 			slideStatus = 'Still creating slide...';
 			return;
 		}
@@ -293,46 +439,54 @@
 		slideStatus = 'Saving...';
 		const toastId = toast.loading('Saving slide...');
 
-		return async ({ result }) => {
-			if (result.type === 'success') {
-				const payload = result.data as { slideUpdated?: { slide?: EditorSlide | null } };
-				if (payload.slideUpdated?.slide) {
-					replaceSlide(slideId, {
-						...payload.slideUpdated.slide,
-						questionCount: submittedQuestionCount
-					});
-				}
-				markSaved('Slide saved', toastId);
-				return;
+		try {
+			const patch = slidePatchFromForm(formData);
+			const saved = await runMutation(() =>
+				updateSlideMutation({
+					organizationId,
+					slideId: slideId as Id<'slides'>,
+					type: formData.get('type') === 'quiz' ? 'quiz' : 'content',
+					title: patch.title ?? '',
+					subtitle: patch.subtitle ?? '',
+					body: patch.body ?? '',
+					imageDescription: patch.imageDescription ?? '',
+					presenterNotes: patch.presenterNotes ?? ''
+				})
+			);
+			if (saved) {
+				replaceSlide(slideId, {
+					...toEditorSlide(saved),
+					questions: submittedSlide?.questions ?? [],
+					questionCount: submittedQuestionCount
+				});
 			}
-
-			handleSlideFailure(snapshot, result, toastId);
-		};
+			markSaved('Slide saved', toastId);
+		} catch (error) {
+			handleSlideFailure(snapshot, error, toastId);
+		}
 	};
 
-	const enhanceUploadSlideImage: SubmitFunction = (submit) => {
+	const enhanceUploadSlideImage: SubmitFunction = async (submit) => {
 		if (!submit?.formData) {
 			return;
 		}
 
 		const { cancel, formData } = submit;
+		cancel();
 		const slideId = String(formData.get('slideId') ?? '');
 		const file = formData.get('imageFile');
 
 		if (!slideId || slideId.startsWith('temp-')) {
-			cancel();
 			slideActionError = 'Save the slide before uploading an image.';
 			return;
 		}
 
 		if (!(file instanceof File) || file.size === 0) {
-			cancel();
 			slideActionError = 'Choose an image file first.';
 			return;
 		}
 
 		if (!file.type.startsWith('image/')) {
-			cancel();
 			slideActionError = 'Slide images must be image files.';
 			return;
 		}
@@ -341,29 +495,52 @@
 		slideStatus = 'Uploading image...';
 		const toastId = toast.loading('Uploading image...');
 
-		return async ({ result }) => {
-			if (result.type === 'success') {
-				const payload = result.data as { slideImageUploaded?: { slide?: EditorSlide | null } };
-				if (payload.slideImageUploaded?.slide) {
-					replaceSlide(slideId, payload.slideImageUploaded.slide);
-				}
-				markSaved('Image uploaded', toastId);
-				return;
+		try {
+			const uploadUrl = await runMutation(() =>
+				generateSlideImageUploadUrlMutation({
+					organizationId,
+					slideId: slideId as Id<'slides'>
+				})
+			);
+			const uploadResponse = await fetch(uploadUrl, {
+				method: 'POST',
+				headers: { 'Content-Type': file.type },
+				body: file
+			});
+			if (!uploadResponse.ok) throw new Error('Image upload failed.');
+			const upload = (await uploadResponse.json()) as { storageId?: string };
+			if (!upload.storageId) throw new Error('Image upload did not return a storage id.');
+			const saved = await runMutation(() =>
+				attachSlideImageMutation({
+					organizationId,
+					slideId: slideId as Id<'slides'>,
+					storageId: upload.storageId as Id<'_storage'>,
+					fileName: file.name
+				})
+			);
+			if (saved) {
+				const previous = findSlide(slideId);
+				replaceSlide(slideId, {
+					...toEditorSlide(saved),
+					questions: previous?.questions ?? [],
+					questionCount: previous?.questionCount ?? 0
+				});
 			}
-
-			handleSlideImageFailure(result, toastId);
-		};
+			markSaved('Image uploaded', toastId);
+		} catch (error) {
+			handleSlideImageFailure(error, toastId);
+		}
 	};
 
-	const enhanceDeleteSlide: SubmitFunction = (submit) => {
+	const enhanceDeleteSlide: SubmitFunction = async (submit) => {
 		if (!submit?.formData) {
 			return;
 		}
 
 		const { cancel, formData } = submit;
+		cancel();
 		const slideId = String(formData.get('slideId') ?? '');
 		if (!slideId) {
-			cancel();
 			slideActionError = 'Choose a slide before deleting it.';
 			return;
 		}
@@ -374,32 +551,320 @@
 			slideStatus = 'Deleting...';
 
 			if (slideId.startsWith('temp-')) {
-				cancel();
 				markSaved('Slide removed');
 				return;
 			}
 
 			const toastId = toast.loading('Deleting slide...');
 
-			return async ({ result }) => {
-				if (result.type === 'success') {
-					markSaved('Slide deleted', toastId);
-					return;
-				}
-
-				handleSlideFailure(snapshot, result, toastId);
-			};
+			try {
+				await runMutation(() =>
+					deleteSlideMutation({
+						organizationId,
+						slideId: slideId as Id<'slides'>
+					})
+				);
+				markSaved('Slide deleted', toastId);
+			} catch (error) {
+				handleSlideFailure(snapshot, error, toastId);
+			}
 	};
+
+	// ── Reordering ─────────────────────────────────────────────
+	// Return a copy of `list` with the item at `index` swapped one step in
+	// `dir` (-1 up, 1 down); out-of-range moves return the list unchanged.
+	function moved<T>(list: T[], index: number, dir: -1 | 1): T[] {
+		const next = [...list];
+		const target = index + dir;
+		if (target < 0 || target >= next.length) return next;
+		[next[index], next[target]] = [next[target], next[index]];
+		return next;
+	}
+
+	const enhanceCreateTopic: SubmitFunction = async ({ cancel, formData, formElement }) => {
+		cancel();
+		const title = String(formData.get('title') ?? '').trim();
+		if (!title) {
+			slideActionError = 'Give the topic a title first.';
+			return;
+		}
+
+		const snapshot = cloneTopics(topics);
+		const tempId = `temp-topic-${Date.now()}`;
+		const optimisticTopic: EditorTopic = {
+			topicId: tempId,
+			title,
+			order: topics.length,
+			slideCount: 0,
+			questionCount: 0,
+			slides: []
+		};
+		topics = [...topics, optimisticTopic];
+		activeTopicId = tempId;
+		selectedSlideId = '';
+		(formElement.elements.namedItem('title') as HTMLInputElement | null)?.blur();
+		formElement.reset();
+		const toastId = toast.loading('Adding topic...');
+
+		try {
+			const saved = await runMutation(() =>
+				createTopicMutation({ organizationId, courseId, title })
+			);
+			if (saved) {
+				topics = topics.map((topic) =>
+					topic.topicId === tempId
+						? { ...optimisticTopic, topicId: saved._id, order: saved.order }
+						: topic
+				);
+				if (activeTopicId === tempId) activeTopicId = saved._id;
+			}
+			markSaved('Topic added', toastId);
+		} catch (error) {
+			handleSlideFailure(snapshot, error, toastId);
+		}
+	};
+
+	function enhanceReorderTopics(): SubmitFunction {
+		return async ({ cancel, formData }) => {
+			cancel();
+			const topicIds = formData.getAll('topicIds').map(String);
+			const snapshot = cloneTopics(topics);
+			const byId = new Map(topics.map((topic) => [topic.topicId, topic]));
+			topics = topicIds
+				.map((id) => byId.get(id))
+				.filter((topic): topic is EditorTopic => Boolean(topic))
+				.map((topic, order) => ({ ...topic, order }));
+
+			try {
+				await runMutation(() =>
+					reorderTopicsMutation({
+						organizationId,
+						courseId,
+						topicIds: topicIds.map((id) => id as Id<'topics'>)
+					})
+				);
+			} catch (error) {
+				handleSlideFailure(snapshot, error);
+			}
+		};
+	}
+
+	function enhanceReorderSlides(): SubmitFunction {
+		return async ({ cancel, formData }) => {
+			cancel();
+			const topicId = String(formData.get('topicId') ?? '');
+			const slideIds = formData.getAll('slideIds').map(String);
+			const snapshot = cloneTopics(topics);
+			updateTopicSlides(topicId, (slides) => {
+				const byId = new Map(slides.map((slide) => [slide.slideId, slide]));
+				return slideIds
+					.map((id) => byId.get(id))
+					.filter((slide): slide is EditorSlide => Boolean(slide));
+			});
+
+			try {
+				await runMutation(() =>
+					reorderSlidesMutation({
+						organizationId,
+						topicId: topicId as Id<'topics'>,
+						slideIds: slideIds.map((id) => id as Id<'slides'>)
+					})
+				);
+			} catch (error) {
+				handleSlideFailure(snapshot, error);
+			}
+		};
+	}
+
+	// ── Quiz question builder ──────────────────────────────────
+	// One builder drives the currently selected slide; create vs. edit is
+	// decided by whether `qEditingId` is set. Everything reloads on submit.
+	let qEditingId = $state<string | null>(null);
+	let qType = $state<QuestionType>('multiple_choice');
+	let qPrompt = $state('');
+	let qOptions = $state<string[]>(['', '']);
+	let qCorrect = $state<number[]>([]);
+	let qAnswers = $state<string[]>(['']);
+
+	const singleCorrect = $derived(qType === 'multiple_choice' || qType === 'true_false');
+
+	function resetQuestionForm() {
+		qEditingId = null;
+		qType = 'multiple_choice';
+		qPrompt = '';
+		qOptions = ['', ''];
+		qCorrect = [];
+		qAnswers = [''];
+	}
+
+	function startEditQuestion(question: EditorQuestion) {
+		qEditingId = question.questionId;
+		qType = question.type;
+		qPrompt = question.prompt;
+		qOptions = question.options ? [...question.options] : ['', ''];
+		qCorrect = question.correctOptions ? [...question.correctOptions] : [];
+		qAnswers = question.acceptedAnswers?.length ? [...question.acceptedAnswers] : [''];
+	}
+
+	function changeType(value: string) {
+		qType = value as QuestionType;
+		qCorrect = [];
+	}
+
+	function toggleCorrect(index: number) {
+		if (singleCorrect) {
+			qCorrect = [index];
+		} else {
+			qCorrect = qCorrect.includes(index)
+				? qCorrect.filter((n) => n !== index)
+				: [...qCorrect, index];
+		}
+	}
+
+	function removeOption(index: number) {
+		qOptions = qOptions.filter((_, i) => i !== index);
+		qCorrect = qCorrect.filter((n) => n !== index).map((n) => (n > index ? n - 1 : n));
+	}
+
+	function questionSummary(question: EditorQuestion) {
+		if (question.type === 'fill_in_the_blank') {
+			return question.acceptedAnswers ?? [];
+		}
+		return question.options ?? [];
+	}
+
+	function toEditorQuestion(question: {
+		_id: string;
+		type: QuestionType;
+		prompt: string;
+		options?: string[];
+		correctOptions?: number[];
+		acceptedAnswers?: string[];
+		order: number;
+	}): EditorQuestion {
+		return {
+			questionId: question._id,
+			type: question.type,
+			prompt: question.prompt,
+			options: question.options ?? null,
+			correctOptions: question.correctOptions ?? null,
+			acceptedAnswers: question.acceptedAnswers ?? null,
+			order: question.order
+		};
+	}
+
+	function setSlideQuestions(slideId: string, questions: EditorQuestion[]) {
+		replaceSlide(slideId, {
+			questions: questions.map((question, order) => ({ ...question, order })),
+			questionCount: questions.length
+		});
+	}
+
+	const enhanceQuestion: SubmitFunction = async ({ cancel, formData }) => {
+		cancel();
+		const slideId = String(formData.get('slideId') ?? '');
+		const prompt = String(formData.get('prompt') ?? '').trim();
+		if (!slideId || !prompt) {
+			slideActionError = 'Write the question prompt first.';
+			return;
+		}
+
+		const type = String(formData.get('type') ?? '') as QuestionType;
+		const options = type === 'true_false'
+			? ['True', 'False']
+			: formData.getAll('options').map(String).map((value) => value.trim()).filter(Boolean);
+		const correctOptions = formData.getAll('correctOptions').map(Number);
+		const acceptedAnswers = formData
+			.getAll('acceptedAnswers')
+			.map(String)
+			.map((value) => value.trim())
+			.filter(Boolean);
+		const payload = {
+			organizationId,
+			type,
+			prompt,
+			...(type === 'fill_in_the_blank'
+				? { acceptedAnswers }
+				: { options, correctOptions })
+		};
+		const snapshot = cloneTopics(topics);
+		const current = findSlide(slideId);
+		const editingQuestionId = qEditingId;
+		const toastId = toast.loading(editingQuestionId ? 'Saving question...' : 'Adding question...');
+
+		try {
+			if (editingQuestionId) {
+				const saved = await runMutation(() =>
+					updateQuestionMutation({
+						...payload,
+						questionId: editingQuestionId as Id<'quizQuestions'>
+					})
+				);
+				if (saved && current) {
+					setSlideQuestions(
+						slideId,
+						current.questions.map((question) =>
+							question.questionId === editingQuestionId ? toEditorQuestion(saved) : question
+						)
+					);
+				}
+			} else {
+				const saved = await runMutation(() =>
+					createQuestionMutation({
+						...payload,
+						slideId: slideId as Id<'slides'>
+					})
+				);
+				if (saved && current) setSlideQuestions(slideId, [...current.questions, toEditorQuestion(saved)]);
+			}
+			resetQuestionForm();
+			markSaved(editingQuestionId ? 'Question saved' : 'Question added', toastId);
+		} catch (error) {
+			handleSlideFailure(snapshot, error, toastId);
+		}
+	};
+
+	function enhanceReorderQuestions(): SubmitFunction {
+		return async ({ cancel, formData }) => {
+			cancel();
+			const slideId = String(formData.get('slideId') ?? '');
+			const questionIds = formData.getAll('questionIds').map(String);
+			const snapshot = cloneTopics(topics);
+			const slide = findSlide(slideId);
+			if (!slide) return;
+			const byId = new Map(slide.questions.map((question) => [question.questionId, question]));
+			const next = questionIds
+				.map((id) => byId.get(id))
+				.filter((question): question is EditorQuestion => Boolean(question));
+			setSlideQuestions(slideId, next);
+
+			try {
+				await runMutation(() =>
+					reorderQuestionsMutation({
+						organizationId,
+						slideId: slideId as Id<'slides'>,
+						questionIds: questionIds.map((id) => id as Id<'quizQuestions'>)
+					})
+				);
+			} catch (error) {
+				handleSlideFailure(snapshot, error);
+			}
+		};
+	}
 
 	function selectTopic(topic: EditorTopic) {
 		activeTopicId = topic.topicId;
 		selectedSlideId = topic.slides[0]?.slideId ?? '';
+		clearAddMenuCloseTimer();
 		addMenuOpen = false;
+		addMenuClosing = false;
+		resetQuestionForm();
 	}
 
 	function selectSlide(slide: EditorSlide) {
 		selectedSlideId = slide.slideId;
-		addMenuOpen = false;
+		closeAddMenu();
+		resetQuestionForm();
 	}
 
 	function thumbTitle(slide: EditorSlide) {
@@ -428,6 +893,12 @@
 </svelte:head>
 
 <Toaster richColors closeButton position="bottom-right" />
+
+{#snippet idInputs(name: string, ids: string[])}
+	{#each ids as id}
+		<input type="hidden" {name} value={id} />
+	{/each}
+{/snippet}
 
 <div class="na-editor">
 
@@ -482,7 +953,13 @@
 			<div class="na-rail-section na-rail-section-topics">
 				<div class="na-rail-section-head">
 					<span class="na-rail-label">Topics</span>
-					<form method="POST" action="?/createSection" class="na-hstack" style="gap:6px">
+					<form
+						method="POST"
+						action="?/createSection"
+						class="na-hstack"
+						style="gap:6px"
+						use:enhance={enhanceCreateTopic}
+					>
 						<input
 							class="na-input"
 							style="height:28px;width:100px;font-size:12px;padding:4px 8px"
@@ -499,33 +976,49 @@
 						<AlertDescription>{form.sectionCreationError}</AlertDescription>
 					</Alert>
 				{/if}
+				{#if form?.reorderError}
+					<Alert variant="destructive">
+						<AlertDescription>{form.reorderError}</AlertDescription>
+					</Alert>
+				{/if}
 
 				<div class="na-rail-topic-list">
-					{#each topics as topic, i}
-						<button
-							type="button"
-							class="na-rail-topic {activeTopic?.topicId === topic.topicId ? 'active' : ''}"
-							onclick={() => selectTopic(topic)}
-						>
-							<div class="na-hstack" style="justify-content:space-between;min-width:0">
-								<div class="na-hstack" style="gap:7px;min-width:0">
-									<span class="na-mono" style="font-size:11px;color:var(--na-ink-4);flex-shrink:0">
-										{String(i + 1).padStart(2, '0')}
-									</span>
-									<span class="na-rail-topic-title {activeTopic?.topicId === topic.topicId ? 'active-text' : ''}">
-										{topic.title || 'Untitled topic'}
-									</span>
+					{#each topics as topic, i (topic.topicId)}
+						<div class="na-rail-topic-row">
+							<button
+								type="button"
+								class="na-rail-topic {activeTopic?.topicId === topic.topicId ? 'active' : ''}"
+								onclick={() => selectTopic(topic)}
+							>
+								<div class="na-hstack" style="justify-content:space-between;min-width:0">
+									<div class="na-hstack" style="gap:7px;min-width:0">
+										<span class="na-mono" style="font-size:11px;color:var(--na-ink-4);flex-shrink:0">
+											{String(i + 1).padStart(2, '0')}
+										</span>
+										<span class="na-rail-topic-title {activeTopic?.topicId === topic.topicId ? 'active-text' : ''}">
+											{topic.title || 'Untitled topic'}
+										</span>
+									</div>
 								</div>
-								<span class="na-rail-remove-glyph">×</span>
+								<div class="na-rail-topic-meta">
+									<span>{topic.slideCount} slides</span>
+									{#if topic.questionCount > 0}
+										<span class="na-dot-sep-inline"></span>
+										<span>{topic.questionCount} Q</span>
+									{/if}
+								</div>
+							</button>
+							<div class="na-reorder">
+								<form method="POST" action="?/reorderSections" use:enhance={enhanceReorderTopics()}>
+									{@render idInputs('topicIds', moved(topics, i, -1).map((t) => t.topicId))}
+									<button type="submit" class="na-reorder-btn" disabled={i === 0} aria-label="Move topic up">↑</button>
+								</form>
+								<form method="POST" action="?/reorderSections" use:enhance={enhanceReorderTopics()}>
+									{@render idInputs('topicIds', moved(topics, i, 1).map((t) => t.topicId))}
+									<button type="submit" class="na-reorder-btn" disabled={i === topics.length - 1} aria-label="Move topic down">↓</button>
+								</form>
 							</div>
-							<div class="na-rail-topic-meta">
-								<span>{topic.slideCount} slides</span>
-								{#if topic.questionCount > 0}
-									<span class="na-dot-sep-inline"></span>
-									<span>{topic.questionCount} Q</span>
-								{/if}
-							</div>
-						</button>
+						</div>
 					{/each}
 
 					{#if !topics.length}
@@ -600,19 +1093,38 @@
 										onclick={(e) => e.stopPropagation()}
 									>×</button>
 								</form>
+
+								<div class="na-reorder na-thumb-reorder" role="none" onclick={(e) => e.stopPropagation()}>
+									<form method="POST" action="?/reorderSlides" use:enhance={enhanceReorderSlides()}>
+										<input type="hidden" name="topicId" value={activeTopic.topicId} />
+										{@render idInputs('slideIds', moved(activeTopic.slides, si, -1).map((s) => s.slideId))}
+										<button type="submit" class="na-reorder-btn" disabled={si === 0} aria-label="Move slide up">↑</button>
+									</form>
+									<form method="POST" action="?/reorderSlides" use:enhance={enhanceReorderSlides()}>
+										<input type="hidden" name="topicId" value={activeTopic.topicId} />
+										{@render idInputs('slideIds', moved(activeTopic.slides, si, 1).map((s) => s.slideId))}
+										<button type="submit" class="na-reorder-btn" disabled={si === activeTopic.slides.length - 1} aria-label="Move slide down">↓</button>
+									</form>
+								</div>
 							</div>
 						{/each}
 
 						<!-- Add slide -->
 						<div style="position:relative">
-							<button
-								type="button"
-								class="na-thumb-add"
-								onclick={() => (addMenuOpen = !addMenuOpen)}
-							>+ Add slide</button>
+						<button
+							type="button"
+							class="na-thumb-add"
+							aria-expanded={addMenuOpen}
+							aria-controls="add-slide-menu"
+							onclick={toggleAddMenu}
+						>+ Add slide</button>
 
-							{#if addMenuOpen}
-								<div class="na-add-menu">
+						{#if addMenuOpen || addMenuClosing}
+							<div
+								id="add-slide-menu"
+								class="na-add-menu t-dropdown {addMenuOpen ? 'is-open' : 'is-closing'}"
+								data-origin="top-center"
+							>
 									<form method="POST" action="?/createSlide" use:enhance={enhanceCreateSlide(activeTopic.topicId, 'content')}>
 										<input type="hidden" name="topicId" value={activeTopic.topicId} />
 										<input type="hidden" name="type" value="content" />
@@ -832,10 +1344,10 @@
 									<div class="na-field">
 										<div class="na-field-label">
 											Answer choices
-											<span class="na-muted" style="font-weight:400">(managed separately)</span>
+											<span class="na-muted" style="font-weight:400">(edit in the question builder below)</span>
 										</div>
 										<div class="na-choices-placeholder">
-											Question choices are managed in the quiz builder.
+											Add, edit and reorder questions in the quiz builder below this panel.
 										</div>
 									</div>
 									<div class="na-field">
@@ -946,6 +1458,195 @@
 									</button>
 								</div>
 							</form>
+
+							{#if selectedSlide.type === 'quiz'}
+								<div class="na-quiz-builder">
+									<div class="na-field-label" style="font-size:13px">
+										Questions ({selectedSlide.questions.length})
+									</div>
+
+									{#if form?.questionError}
+										<Alert variant="destructive">
+											<AlertDescription>{form.questionError}</AlertDescription>
+										</Alert>
+									{/if}
+
+									{#if selectedSlide.questions.length}
+										<div class="na-q-list">
+											{#each selectedSlide.questions as question, qi (question.questionId)}
+												<div class="na-q-item">
+													<div class="na-q-item-head">
+														<span class="na-type-chip question">{QUESTION_TYPE_LABELS[question.type]}</span>
+														<div class="na-reorder">
+											<form method="POST" action="?/reorderQuestions" use:enhance={enhanceReorderQuestions()}>
+																<input type="hidden" name="slideId" value={selectedSlide.slideId} />
+																{@render idInputs('questionIds', moved(selectedSlide.questions, qi, -1).map((q) => q.questionId))}
+																<button type="submit" class="na-reorder-btn" disabled={qi === 0} aria-label="Move question up">↑</button>
+															</form>
+											<form method="POST" action="?/reorderQuestions" use:enhance={enhanceReorderQuestions()}>
+																<input type="hidden" name="slideId" value={selectedSlide.slideId} />
+																{@render idInputs('questionIds', moved(selectedSlide.questions, qi, 1).map((q) => q.questionId))}
+																<button type="submit" class="na-reorder-btn" disabled={qi === selectedSlide.questions.length - 1} aria-label="Move question down">↓</button>
+															</form>
+															<button type="button" class="na-btn na-btn-sm" onclick={() => startEditQuestion(question)}>Edit</button>
+														</div>
+													</div>
+													<div class="na-q-item-prompt">{question.prompt || 'Untitled question'}</div>
+													<ul class="na-q-item-opts">
+														{#each questionSummary(question) as opt, oi}
+															{@const isCorrect =
+																question.type === 'fill_in_the_blank' ||
+																(question.correctOptions ?? []).includes(oi)}
+															<li class:correct={isCorrect}>
+																{#if isCorrect && question.type !== 'fill_in_the_blank'}✓ {/if}{opt}
+															</li>
+														{/each}
+													</ul>
+												</div>
+											{/each}
+										</div>
+									{:else}
+										<p class="na-muted" style="font-size:13px">No questions yet.</p>
+									{/if}
+
+									{#if selectedSlide.slideId.startsWith('temp-')}
+										<p class="na-muted" style="font-size:13px">Save the slide before adding questions.</p>
+									{:else}
+										<form
+											method="POST"
+											action={qEditingId ? '?/updateQuestion' : '?/createQuestion'}
+											class="na-q-form"
+											use:enhance={enhanceQuestion}
+										>
+											<input type="hidden" name="slideId" value={selectedSlide.slideId} />
+											{#if qEditingId}
+												<input type="hidden" name="questionId" value={qEditingId} />
+											{/if}
+											<input type="hidden" name="type" value={qType} />
+
+											<div class="na-field">
+												<label class="na-field-label" for="q-type-{selectedSlide.slideId}">Question type</label>
+												<select
+													id="q-type-{selectedSlide.slideId}"
+													class="na-input"
+													value={qType}
+													onchange={(event) => changeType(event.currentTarget.value)}
+												>
+													{#each Object.entries(QUESTION_TYPE_LABELS) as [value, label]}
+														<option {value}>{label}</option>
+													{/each}
+												</select>
+											</div>
+
+											<div class="na-field">
+												<label class="na-field-label" for="q-prompt-{selectedSlide.slideId}">Prompt</label>
+												<textarea
+													id="q-prompt-{selectedSlide.slideId}"
+													class="na-input"
+													name="prompt"
+													rows={2}
+													placeholder="Ask your question…"
+													bind:value={qPrompt}
+												></textarea>
+											</div>
+
+											{#if qType === 'fill_in_the_blank'}
+												<div class="na-field">
+													<div class="na-field-label">Accepted answers</div>
+													{#each qAnswers as _, i}
+														<div class="na-q-row">
+															<input
+																class="na-input"
+																name="acceptedAnswers"
+																placeholder="Accepted answer {i + 1}"
+																bind:value={qAnswers[i]}
+															/>
+															{#if qAnswers.length > 1}
+																<button
+																	type="button"
+																	class="na-reorder-btn"
+																	aria-label="Remove answer"
+																	onclick={() => (qAnswers = qAnswers.filter((_, idx) => idx !== i))}
+																>×</button>
+															{/if}
+														</div>
+													{/each}
+													<button
+														type="button"
+														class="na-btn na-btn-sm"
+														onclick={() => (qAnswers = [...qAnswers, ''])}
+													>+ Add answer</button>
+												</div>
+											{:else if qType === 'true_false'}
+												<div class="na-field">
+													<div class="na-field-label">Correct answer</div>
+													{#each ['True', 'False'] as label, i}
+														<label class="na-q-row">
+															<input
+																type="radio"
+																name="correctOptions"
+																value={i}
+																checked={qCorrect.includes(i)}
+																onchange={() => toggleCorrect(i)}
+															/>
+															{label}
+														</label>
+													{/each}
+												</div>
+											{:else}
+												<div class="na-field">
+													<div class="na-field-label">
+														Options
+														<span class="na-muted" style="font-weight:400">
+															({singleCorrect ? 'pick one correct' : 'check all correct'})
+														</span>
+													</div>
+													{#each qOptions as _, i}
+														<div class="na-q-row">
+															<input
+																type={singleCorrect ? 'radio' : 'checkbox'}
+																name="correctOptions"
+																value={i}
+																checked={qCorrect.includes(i)}
+																onchange={() => toggleCorrect(i)}
+																aria-label="Mark option {i + 1} correct"
+															/>
+															<input
+																class="na-input"
+																name="options"
+																placeholder="Option {i + 1}"
+																bind:value={qOptions[i]}
+															/>
+															{#if qOptions.length > 2}
+																<button
+																	type="button"
+																	class="na-reorder-btn"
+																	aria-label="Remove option"
+																	onclick={() => removeOption(i)}
+																>×</button>
+															{/if}
+														</div>
+													{/each}
+													<button
+														type="button"
+														class="na-btn na-btn-sm"
+														onclick={() => (qOptions = [...qOptions, ''])}
+													>+ Add option</button>
+												</div>
+											{/if}
+
+											<div class="na-save-row">
+												{#if qEditingId}
+													<button type="button" class="na-btn na-btn-sm" onclick={resetQuestionForm}>Cancel edit</button>
+												{/if}
+												<button type="submit" class="na-btn na-btn-primary">
+													{qEditingId ? 'Save question' : 'Add question'}
+												</button>
+											</div>
+										</form>
+									{/if}
+								</div>
+							{/if}
 						</div>
 					{:else}
 						<div class="na-editor-empty">
@@ -1119,7 +1820,7 @@
 		padding: 9px 11px;
 		border-radius: 6px;
 		cursor: pointer;
-		transition: background 0.12s ease;
+		transition: background-color var(--motion-fast) var(--motion-ease);
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
@@ -1144,12 +1845,6 @@
 		white-space: nowrap;
 	}
 	.na-rail-topic-title.active-text { font-weight: 500; }
-
-	.na-rail-remove-glyph {
-		font-size: 17px;
-		color: var(--na-ink-4);
-		flex-shrink: 0;
-	}
 
 	.na-rail-topic-meta {
 		display: flex;
@@ -1238,7 +1933,7 @@
 		color: var(--na-ink);
 		padding: 4px 0 12px;
 		border-bottom: 2px solid transparent;
-		transition: border-color 0.15s ease;
+		transition: border-color var(--motion-ui) var(--motion-ease);
 		min-width: 0;
 		width: 100%;
 	}
@@ -1274,7 +1969,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 5px;
-		transition: all 0.12s ease;
 		border-left-width: 3px;
 	}
 	.na-thumb:hover { border-color: var(--na-line-strong); }
@@ -1499,13 +2193,18 @@
 		font-size: 13.5px;
 		font-weight: 500;
 		cursor: pointer;
-		transition: background 0.12s ease;
+		transition:
+			background-color var(--motion-fast) var(--motion-ease),
+			border-color var(--motion-fast) var(--motion-ease),
+			color var(--motion-fast) var(--motion-ease),
+			transform var(--motion-ui) var(--motion-ease-out);
 		text-decoration: none;
 		white-space: nowrap;
 		font-family: var(--na-font-sans);
 		line-height: 1;
 	}
 	.na-btn:hover { background: var(--na-bg-hover); }
+	.na-btn:active:not(:disabled) { transform: translateY(1px); }
 	.na-btn:disabled { opacity: 0.45; cursor: default; }
 	.na-btn:disabled:hover { background: var(--na-bg-elevated); }
 
@@ -1534,7 +2233,10 @@
 		font-family: var(--na-font-sans);
 		font-size: 14px;
 		color: var(--na-ink);
-		transition: all 0.12s ease;
+		transition:
+			border-color var(--motion-fast) var(--motion-ease),
+			box-shadow var(--motion-fast) var(--motion-ease),
+			background-color var(--motion-fast) var(--motion-ease);
 		outline: none;
 	}
 	.na-input:focus {
@@ -1717,6 +2419,132 @@
 		justify-content: center;
 		flex-shrink: 0;
 	}
+
+	/* Reorder controls */
+	.na-rail-topic-row {
+		display: flex;
+		align-items: stretch;
+		gap: 3px;
+	}
+	.na-rail-topic-row .na-rail-topic { flex: 1; min-width: 0; }
+
+	.na-reorder {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+	}
+	.na-rail-topic-row .na-reorder {
+		flex-direction: column;
+		justify-content: center;
+	}
+	.na-reorder form { display: flex; margin: 0; }
+
+	.na-reorder-btn {
+		width: 20px;
+		height: 20px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid var(--na-line-strong);
+		background: var(--na-bg-elevated);
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 11px;
+		line-height: 1;
+		color: var(--na-ink-2);
+		padding: 0;
+		font-family: var(--na-font-sans);
+		transition:
+			background-color var(--motion-fast) var(--motion-ease),
+			border-color var(--motion-fast) var(--motion-ease),
+			transform var(--motion-ui) var(--motion-ease-out);
+	}
+	.na-reorder-btn:hover:not(:disabled) { background: var(--na-bg-hover); }
+	.na-reorder-btn:active:not(:disabled) { transform: translateY(1px); }
+	.na-reorder-btn:disabled { opacity: 0.35; cursor: default; }
+
+	@media (prefers-reduced-motion: reduce) {
+		.na-btn,
+		.na-input,
+		.na-reorder-btn { transition: none; }
+
+		.na-btn:active:not(:disabled),
+		.na-reorder-btn:active:not(:disabled) { transform: none; }
+	}
+
+	.na-thumb-reorder {
+		position: absolute;
+		bottom: 5px;
+		right: 5px;
+		opacity: 0;
+	}
+	.na-thumb:hover .na-thumb-reorder { opacity: 1; }
+
+	/* Quiz builder */
+	.na-quiz-builder {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		max-width: 880px;
+		border-top: 1px solid var(--na-line);
+		padding-top: 20px;
+	}
+
+	.na-q-list {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.na-q-item {
+		border: 1px solid var(--na-line);
+		border-radius: var(--na-radius);
+		padding: 12px 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		background: var(--na-bg-elevated);
+	}
+
+	.na-q-item-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+	.na-q-item-head .na-reorder { gap: 6px; }
+
+	.na-q-item-prompt { font-size: 14px; font-weight: 500; }
+
+	.na-q-item-opts {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		font-size: 13px;
+		color: var(--na-ink-3);
+	}
+	.na-q-item-opts li.correct { color: var(--na-ink); font-weight: 500; }
+
+	.na-q-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		border: 1px solid var(--na-line);
+		border-radius: var(--na-radius);
+		padding: 14px;
+	}
+
+	.na-q-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.na-q-row .na-input { flex: 1; }
+
+	select.na-input { cursor: pointer; }
 
 	/* Responsive */
 	@media (max-width: 1000px) {
