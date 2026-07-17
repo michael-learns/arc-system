@@ -6,6 +6,7 @@ import {
   clampLimit,
   duplicateCourseTree,
   normalizeOptionalString,
+  requireAuthenticatedOrgActor,
   requireDoc,
   requireFacilitatorManagerById,
   requireOrgActorById,
@@ -39,6 +40,32 @@ async function requireCourseAccess(
 
   assert(
     course.ownerUserId === actor.user._id || actor.user.isSuperAdmin || actor.membership.roles.includes("admin"),
+    "You do not have access to this facilitator course.",
+  );
+
+  return { actor, course };
+}
+
+async function requireAuthenticatedCourseAccess(
+  ctx: any,
+  organizationId: Id<"organizations">,
+  courseId: Id<"courses">,
+) {
+  const actor = await requireAuthenticatedOrgActor(ctx, organizationId);
+  const course = await requireDoc(ctx, courseId, "Course not found.");
+
+  if (course.ownerOrgId) {
+    assert(
+      course.ownerOrgId === actor.organization._id,
+      "This course does not belong to the active organization.",
+    );
+    return { actor, course };
+  }
+
+  assert(
+    course.ownerUserId === actor.user._id ||
+      actor.user.isSuperAdmin ||
+      actor.membership.roles.includes("admin"),
     "You do not have access to this facilitator course.",
   );
 
@@ -218,13 +245,12 @@ export const listFacilitatorCourses = query({
 
 export const createTopic = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     courseId: v.id("courses"),
     title: v.string(),
   },
   handler: async (ctx, args) => {
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, args.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, args.courseId);
     const existingTopics = await ctx.db
       .query("topics")
       .withIndex("by_courseId_and_order", (q) => q.eq("courseId", args.courseId))
@@ -243,14 +269,13 @@ export const createTopic = mutation({
 
 export const updateTopic = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     topicId: v.id("topics"),
     title: v.string(),
   },
   handler: async (ctx, args) => {
     const topic = await requireDoc(ctx, args.topicId, "Topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
     await ctx.db.patch(topic._id, {
       title: args.title.trim(),
       updatedAt: Date.now(),
@@ -261,13 +286,12 @@ export const updateTopic = mutation({
 
 export const reorderTopics = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     courseId: v.id("courses"),
     topicIds: v.array(v.id("topics")),
   },
   handler: async (ctx, args) => {
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, args.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, args.courseId);
     const topics = await ctx.db
       .query("topics")
       .withIndex("by_courseId_and_order", (q) => q.eq("courseId", args.courseId))
@@ -298,7 +322,6 @@ export const reorderTopics = mutation({
 
 export const createSlide = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     topicId: v.id("topics"),
     type: slideTypeValidator,
@@ -310,7 +333,7 @@ export const createSlide = mutation({
   },
   handler: async (ctx, args) => {
     const topic = await requireDoc(ctx, args.topicId, "Topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
     const existingSlides = await ctx.db
       .query("slides")
       .withIndex("by_topicId_and_order", (q) => q.eq("topicId", topic._id))
@@ -339,7 +362,6 @@ export const createSlide = mutation({
 
 export const updateSlide = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     slideId: v.id("slides"),
     title: v.optional(v.string()),
@@ -352,7 +374,7 @@ export const updateSlide = mutation({
   handler: async (ctx, args) => {
     const slide = await requireDoc(ctx, args.slideId, "Slide not found.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
 
     const nextBody =
       args.body !== undefined ? normalizeOptionalString(args.body) : slide.body;
@@ -403,14 +425,13 @@ export const updateSlide = mutation({
 
 export const generateSlideImageUploadUrl = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     slideId: v.id("slides"),
   },
   handler: async (ctx, args) => {
     const slide = await requireDoc(ctx, args.slideId, "Slide not found.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
 
     return await ctx.storage.generateUploadUrl();
   },
@@ -418,7 +439,6 @@ export const generateSlideImageUploadUrl = mutation({
 
 export const attachSlideImage = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     slideId: v.id("slides"),
     storageId: v.id("_storage"),
@@ -427,7 +447,7 @@ export const attachSlideImage = mutation({
   handler: async (ctx, args) => {
     const slide = await requireDoc(ctx, args.slideId, "Slide not found.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
 
     const metadata = await ctx.db.system.get("_storage", args.storageId);
     assert(metadata !== null, "Uploaded image was not found.");
@@ -461,14 +481,13 @@ export const attachSlideImage = mutation({
 
 export const deleteSlide = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     slideId: v.id("slides"),
   },
   handler: async (ctx, args) => {
     const slide = await requireDoc(ctx, args.slideId, "Slide not found.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
 
     const quizQuestions = await ctx.db
       .query("quizQuestions")
@@ -519,14 +538,13 @@ export const deleteSlide = mutation({
 
 export const reorderSlides = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     topicId: v.id("topics"),
     slideIds: v.array(v.id("slides")),
   },
   handler: async (ctx, args) => {
     const topic = await requireDoc(ctx, args.topicId, "Topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
     const slides = await ctx.db
       .query("slides")
       .withIndex("by_topicId_and_order", (q) => q.eq("topicId", topic._id))
@@ -558,7 +576,6 @@ export const reorderSlides = mutation({
 
 export const createQuizQuestion = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     slideId: v.id("slides"),
     type: quizQuestionTypeValidator,
@@ -571,7 +588,7 @@ export const createQuizQuestion = mutation({
     const slide = await requireDoc(ctx, args.slideId, "Slide not found.");
     assert(slide.type === "quiz", "Quiz questions can only be added to quiz slides.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
     const questions = await ctx.db
       .query("quizQuestions")
       .withIndex("by_slideId_and_order", (q) => q.eq("slideId", slide._id))
@@ -595,7 +612,6 @@ export const createQuizQuestion = mutation({
 
 export const updateQuizQuestion = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     questionId: v.id("quizQuestions"),
     prompt: v.optional(v.string()),
@@ -608,7 +624,7 @@ export const updateQuizQuestion = mutation({
     const question = await requireDoc(ctx, args.questionId, "Question not found.");
     const slide = await requireDoc(ctx, question.slideId, "Parent slide not found.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
 
     await ctx.db.patch(question._id, {
       ...(args.prompt ? { prompt: args.prompt.trim() } : {}),
@@ -626,7 +642,6 @@ export const updateQuizQuestion = mutation({
 
 export const reorderQuizQuestions = mutation({
   args: {
-    actorTokenIdentifier: v.string(),
     organizationId: v.id("organizations"),
     slideId: v.id("slides"),
     questionIds: v.array(v.id("quizQuestions")),
@@ -634,7 +649,7 @@ export const reorderQuizQuestions = mutation({
   handler: async (ctx, args) => {
     const slide = await requireDoc(ctx, args.slideId, "Slide not found.");
     const topic = await requireDoc(ctx, slide.topicId, "Parent topic not found.");
-    await requireCourseAccess(ctx, args.actorTokenIdentifier, args.organizationId, topic.courseId);
+    await requireAuthenticatedCourseAccess(ctx, args.organizationId, topic.courseId);
     const questions = await ctx.db
       .query("quizQuestions")
       .withIndex("by_slideId_and_order", (q) => q.eq("slideId", slide._id))
